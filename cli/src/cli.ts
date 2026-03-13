@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { createServer } from 'node:http';
-import { mkdir, writeFile, readdir, unlink, copyFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { request as httpsRequest } from 'node:https';
+import { mkdir, writeFile, readdir, unlink, copyFile, stat, readFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
+import { execSync } from 'node:child_process';
 
 const PORT = 2847;
 
@@ -9,6 +11,7 @@ async function main() {
   const args = process.argv.slice(2);
   const portArg = args.find((_, i) => args[i - 1] === '--port');
   const dirArg = args.find((_, i) => args[i - 1] === '--dir');
+  const watchMode = args.includes('--watch');
 
   const port = portArg ? parseInt(portArg, 10) : PORT;
   const capturesDir = join(process.cwd(), dirArg || '.shotfix/captures');
@@ -45,6 +48,185 @@ async function main() {
       }
     } catch {
       // Directory may not exist yet
+    }
+  }
+
+  // Resolve API key from env or noxkey
+  let apiKey = process.env.GEMINI_API_KEY || '';
+  if (!apiKey && watchMode) {
+    try {
+      apiKey = execSync('noxkey get shared/GEMINI_API_KEY --raw', { encoding: 'utf-8' }).trim();
+    } catch {
+      try {
+        apiKey = execSync('noxkey get shared/GEMINI_API_KEY --raw 2>/dev/null', { encoding: 'utf-8' }).trim();
+      } catch {
+        // Will warn at startup
+      }
+    }
+  }
+
+  // Find source files matching a CSS selector/classes using grep
+  async function findSourceFile(captureJson: Record<string, unknown>): Promise<{ path: string; content: string } | null> {
+    const element = (captureJson.elements as Array<Record<string, unknown>>)?.[0];
+    if (!element) return null;
+
+    const classes = (element.classes as string[]) || [];
+    const text = (element.text as string) || '';
+    const cwd = process.cwd();
+
+    // Search for class names or text content in source files
+    for (const term of [...classes, text].filter(Boolean)) {
+      try {
+        const result = execSync(
+          `grep -rl --include="*.html" --include="*.jsx" --include="*.tsx" --include="*.vue" --include="*.svelte" --include="*.js" --include="*.css" ${JSON.stringify(term)} . 2>/dev/null | head -5`,
+          { cwd, encoding: 'utf-8', timeout: 2000 }
+        ).trim();
+
+        if (result) {
+          const files = result.split('\n').filter(f => !f.includes('node_modules') && !f.includes('/dist/'));
+          for (const file of files) {
+            const fullPath = join(cwd, file);
+            const content = await readFile(fullPath, 'utf-8');
+            if (content.length < 50000) { // Skip huge files
+              return { path: relative(cwd, fullPath), content };
+            }
+          }
+        }
+      } catch {
+        // grep failed, try next term
+      }
+    }
+    return null;
+  }
+
+  // Call Gemini Flash Lite directly — single API call, no CLI
+  let fixing = false;
+
+  async function autoFix(captureJson: Record<string, unknown>) {
+    if (!watchMode || !apiKey) return;
+    if (fixing) {
+      console.log('  ⏳ Already fixing, skipping...');
+      return;
+    }
+
+    fixing = true;
+    const startTime = Date.now();
+    const title = captureJson.title as string;
+
+    const element = (captureJson.elements as Array<Record<string, unknown>>)?.[0];
+    const selector = element?.selector || '';
+    const elementClasses = (element?.classes as string[])?.join(', ') || '';
+
+    console.log(`  🤖 Auto-fixing: "${title}"...`);
+
+    try {
+      // Find the source file before calling the API
+      const source = await findSourceFile(captureJson);
+      if (!source) {
+        console.log('  ❌ Could not find source file to edit');
+        fixing = false;
+        return;
+      }
+      console.log(`  📄 Found: ${source.path}`);
+
+      // Build a tight prompt — ask for search/replace only
+      const prompt = [
+        `Fix this UI issue: "${title}"`,
+        selector ? `Element: ${selector}` : '',
+        elementClasses ? `Classes: ${elementClasses}` : '',
+        '',
+        `File: ${source.path}`,
+        '```',
+        source.content,
+        '```',
+        '',
+        'Return ONLY a JSON array of edits. Each edit: {"old":"exact line(s) to find","new":"replacement line(s)"}',
+        'Example: [{"old":"color: red;","new":"color: green;"}]',
+        'Minimal changes only. No explanation.',
+      ].filter(Boolean).join('\n');
+
+      // Call Gemini Flash Lite
+      const body = JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 1024,
+        },
+      });
+
+      const result = await new Promise<string>((resolve, reject) => {
+        const req = httpsRequest(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+          (res) => {
+            let data = '';
+            res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+            res.on('end', () => {
+              if (res.statusCode !== 200) {
+                reject(new Error(`Gemini API ${res.statusCode}: ${data}`));
+                return;
+              }
+              try {
+                const json = JSON.parse(data);
+                const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                resolve(text);
+              } catch (e) {
+                reject(e);
+              }
+            });
+          }
+        );
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      });
+
+      if (!result.trim()) {
+        console.log('  ❌ Empty response from Gemini');
+        fixing = false;
+        return;
+      }
+
+      // Parse JSON edits from response (strip markdown fences if present)
+      let raw = result.trim();
+      const fenceMatch = raw.match(/^```[\w]*\n([\s\S]*)\n```\s*$/);
+      if (fenceMatch) raw = fenceMatch[1].trim();
+
+      let edits: Array<{ old: string; new: string }>;
+      try {
+        edits = JSON.parse(raw);
+      } catch {
+        console.log('  ❌ Could not parse edit response');
+        fixing = false;
+        return;
+      }
+
+      // Apply edits to source
+      let newContent = source.content;
+      let applied = 0;
+      for (const edit of edits) {
+        if (newContent.includes(edit.old)) {
+          newContent = newContent.replace(edit.old, edit.new);
+          applied++;
+        }
+      }
+
+      if (applied === 0) {
+        console.log('  ❌ No edits matched the source');
+        fixing = false;
+        return;
+      }
+
+      // Write the fixed file
+      const fullPath = join(process.cwd(), source.path);
+      await writeFile(fullPath, newContent);
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`  ✅ Fixed: "${title}" in ${elapsed}s → ${source.path}`);
+    } catch (err) {
+      console.error('  ❌ Auto-fix error:', (err as Error).message);
+    } finally {
+      fixing = false;
     }
   }
 
@@ -116,6 +298,9 @@ async function main() {
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
+
+          // Trigger auto-fix in watch mode (after response sent)
+          autoFix(captureJson);
         } catch (err) {
           console.error('Failed to process capture:', err);
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -132,6 +317,12 @@ async function main() {
   server.listen(port, () => {
     console.log(`⚡ Shotfix dev server running on port ${port}`);
     console.log(`  Captures saved to ${capturesDir}`);
+    if (watchMode && apiKey) {
+      console.log(`  🤖 Watch mode: captures will auto-fix via Gemini Flash Lite`);
+    } else if (watchMode) {
+      console.log(`  ⚠️  Watch mode enabled but no GEMINI_API_KEY found`);
+      console.log(`     Set env var or store with: noxkey set shared/GEMINI_API_KEY`);
+    }
     console.log('');
     console.log('Tip: Add to CLAUDE.md: "Check .shotfix/captures/latest.json and latest.png for bug captures"');
   });
