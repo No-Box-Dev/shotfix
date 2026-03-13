@@ -1,0 +1,42 @@
+{
+  "name": "shotfix",
+  "version": "0.1.0",
+  "description": "Visual AI input — screenshot + fix for developers",
+  "type": "module",
+  "bin": {
+    "shotfix": "dist/bin.js",
+    "shotfix-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "shotfix",
+    "claude",
+    "screenshot",
+    "visual-ai",
+    "model-context-protocol"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/No-Box-Dev/shotfix.git",
+    "directory": "cli"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

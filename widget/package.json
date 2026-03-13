@@ -1,0 +1,15 @@
+{
+  "name": "shotfix-widget",
+  "version": "0.1.0",
+  "description": "Visual AI input — screenshot + fix for developers",
+  "main": "dist/shotfix.min.js",
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --minify --outfile=dist/shotfix.min.js --format=iife --global-name=Shotfix",
+    "watch": "esbuild src/index.js --bundle --outfile=dist/shotfix.js --format=iife --global-name=Shotfix --watch",
+    "serve": "npx serve . -p 3000"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  },
+  "license": "MIT"
+}
