@@ -3,7 +3,7 @@
  */
 
 const CSS = `
-/* Trigger pill — top right */
+/* Trigger pill — bottom right */
 .shotfix-trigger {
   position: fixed;
   bottom: 16px;

@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { mkdir, writeFile, readdir, unlink, copyFile, stat, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 
 const PORT = 2847;
 
@@ -72,14 +72,23 @@ async function main() {
 
     // Search for class names or text content in source files
     for (const term of [...classes, text].filter(Boolean)) {
-      try {
-        const result = execSync(
-          `grep -rl --include="*.html" --include="*.jsx" --include="*.tsx" --include="*.vue" --include="*.svelte" --include="*.js" --include="*.css" ${JSON.stringify(term)} . 2>/dev/null | head -5`,
-          { cwd, encoding: 'utf-8', timeout: 2000 }
-        ).trim();
+      // Skip terms with shell-dangerous characters
+      if (!/^[\w\s\-_.#]+$/.test(term)) continue;
 
+      try {
+        const grepResult = spawnSync('grep', [
+          '-rl',
+          '--include=*.html', '--include=*.jsx', '--include=*.tsx',
+          '--include=*.vue', '--include=*.svelte', '--include=*.js', '--include=*.css',
+          term,
+          '.'
+        ], { cwd, encoding: 'utf-8', timeout: 2000 });
+
+        const result = (grepResult.stdout || '').trim();
         if (result) {
-          const files = result.split('\n').filter(f => !f.includes('node_modules') && !f.includes('/dist/'));
+          const files = result.split('\n')
+            .filter(f => !f.includes('node_modules') && !f.includes('/dist/'))
+            .slice(0, 5);
           for (const file of files) {
             const fullPath = join(cwd, file);
             const content = await readFile(fullPath, 'utf-8');
@@ -95,7 +104,7 @@ async function main() {
     return null;
   }
 
-  // Call Gemini Flash Lite directly — single API call, no CLI
+  // Call Gemini Flash directly — single API call, no CLI
   let fixing = false;
 
   async function autoFix(captureJson: Record<string, unknown>) {
@@ -141,7 +150,7 @@ async function main() {
         'Minimal changes only. No explanation.',
       ].filter(Boolean).join('\n');
 
-      // Call Gemini Flash Lite
+      // Call Gemini Flash
       const body = JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
@@ -158,6 +167,7 @@ async function main() {
             let data = '';
             res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
             res.on('end', () => {
+              clearTimeout(timeout);
               if (res.statusCode !== 200) {
                 reject(new Error(`Gemini API ${res.statusCode}: ${data}`));
                 return;
@@ -172,7 +182,14 @@ async function main() {
             });
           }
         );
-        req.on('error', reject);
+        const timeout = setTimeout(() => {
+          req.destroy();
+          reject(new Error('Gemini API request timed out'));
+        }, 30000);
+        req.on('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
         req.write(body);
         req.end();
       });
@@ -296,7 +313,9 @@ async function main() {
           res.end(JSON.stringify({ ok: true }));
 
           // Trigger auto-fix in watch mode (after response sent)
-          autoFix(captureJson);
+          autoFix(captureJson).catch((err) => {
+            console.error('  ❌ Unexpected auto-fix error:', (err as Error).message);
+          });
         } catch (err) {
           console.error('Failed to process capture:', err);
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -314,7 +333,7 @@ async function main() {
     console.log(`⚡ Shotfix dev server running on port ${port}`);
     console.log(`  Captures saved to ${capturesDir}`);
     if (watchMode && apiKey) {
-      console.log(`  🤖 Watch mode: captures will auto-fix via Gemini Flash Lite`);
+      console.log(`  🤖 Watch mode: captures will auto-fix via Gemini Flash`);
     } else if (watchMode) {
       console.log(`  ⚠️  Watch mode enabled but no GEMINI_API_KEY found`);
       console.log(`     Set env var or store with: noxkey set shared/GEMINI_API_KEY`);
