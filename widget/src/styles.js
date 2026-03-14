@@ -3,26 +3,28 @@
  */
 
 const CSS = `
-/* Trigger button */
+/* Trigger pill — bottom right */
 .shotfix-trigger {
   position: fixed;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  bottom: 16px;
+  right: 16px;
   z-index: 2147483647;
   background: #9B78F4;
   color: white;
   border: none;
-  width: 36px;
   height: 36px;
-  border-radius: 8px 0 0 8px;
+  padding: 0 14px 0 12px;
+  border-radius: 18px;
   cursor: pointer;
   display: flex;
   align-items: center;
-  justify-content: center;
-  box-shadow: -2px 2px 8px rgba(0,0,0,0.15);
-  transition: background 0.2s ease;
-  opacity: 0.8;
+  gap: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  transition: background 0.2s ease, opacity 0.2s ease;
+  opacity: 0.85;
 }
 
 .shotfix-trigger:hover {
@@ -31,8 +33,15 @@ const CSS = `
 }
 
 .shotfix-trigger svg {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.shotfix-trigger kbd {
+  font-family: inherit;
+  font-size: 11px;
+  opacity: 0.75;
 }
 
 /* ── Quick capture: live purple overlay ── */

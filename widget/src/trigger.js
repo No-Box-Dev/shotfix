@@ -17,11 +17,13 @@ let triggerButton = null;
 export function createTrigger(onCapture) {
   if (triggerButton) return triggerButton;
 
+  const isMac = /mac/i.test(navigator.userAgent);
+  const shortcut = isMac ? '⌘⇧E' : 'Ctrl+Shift+E';
+
   triggerButton = document.createElement('button');
   triggerButton.className = 'shotfix-trigger';
-  triggerButton.innerHTML = LIGHTNING_ICON;
-  triggerButton.setAttribute('aria-label', 'Quick capture');
-  triggerButton.title = 'Shotfix capture (Cmd+Shift+E)';
+  triggerButton.innerHTML = `${LIGHTNING_ICON}<kbd>${shortcut}</kbd>`;
+  triggerButton.setAttribute('aria-label', `Shotfix capture (${shortcut})`);
 
   triggerButton.addEventListener('click', () => {
     onCapture();
