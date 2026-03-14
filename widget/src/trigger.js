@@ -17,7 +17,7 @@ let triggerButton = null;
 export function createTrigger(onCapture) {
   if (triggerButton) return triggerButton;
 
-  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const isMac = /mac/i.test(navigator.userAgent);
   const shortcut = isMac ? '⌘⇧E' : 'Ctrl+Shift+E';
 
   triggerButton = document.createElement('button');

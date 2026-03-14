@@ -55,13 +55,9 @@ async function main() {
   let apiKey = process.env.GEMINI_API_KEY || '';
   if (!apiKey && watchMode) {
     try {
-      apiKey = execSync('noxkey get shared/GEMINI_API_KEY --raw', { encoding: 'utf-8' }).trim();
+      apiKey = execSync('noxkey get shared/GEMINI_API_KEY --raw', { encoding: 'utf-8', stdio: 'pipe' }).trim();
     } catch {
-      try {
-        apiKey = execSync('noxkey get shared/GEMINI_API_KEY --raw 2>/dev/null', { encoding: 'utf-8' }).trim();
-      } catch {
-        // Will warn at startup
-      }
+      // Will warn at startup
     }
   }
 
@@ -156,8 +152,8 @@ async function main() {
 
       const result = await new Promise<string>((resolve, reject) => {
         const req = httpsRequest(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+          { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey } },
           (res) => {
             let data = '';
             res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
@@ -206,7 +202,7 @@ async function main() {
       let applied = 0;
       for (const edit of edits) {
         if (newContent.includes(edit.old)) {
-          newContent = newContent.replace(edit.old, edit.new);
+          newContent = newContent.replaceAll(edit.old, edit.new);
           applied++;
         }
       }
