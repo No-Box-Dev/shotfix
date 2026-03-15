@@ -2,7 +2,7 @@
 import { createServer } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { mkdir, writeFile, readdir, unlink, copyFile, stat, readFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 
 const PORT = 2847;
@@ -104,13 +104,29 @@ async function main() {
     return null;
   }
 
+  // SSE clients for live activity feed
+  const sseClients = new Set<import('node:http').ServerResponse>();
+
+  function broadcast(event: string, data: Record<string, unknown>) {
+    const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const client of sseClients) {
+      try { client.write(msg); } catch { sseClients.delete(client); }
+    }
+  }
+
+  // Revert history — stores original file content before AI edits
+  const revertHistory = new Map<string, { original: string; title: string }>();
+
   // Call Gemini Flash directly — single API call, no CLI
+  const fixQueue: Array<Record<string, unknown>> = [];
   let fixing = false;
+  let cancelRequested = false;
 
   async function autoFix(captureJson: Record<string, unknown>) {
     if (!watchMode || !apiKey) return;
     if (fixing) {
-      console.log('  ⏳ Already fixing, skipping...');
+      fixQueue.push(captureJson);
+      console.log(`  ⏳ Queued: "${captureJson.title}" (${fixQueue.length} in queue)`);
       return;
     }
 
@@ -123,16 +139,19 @@ async function main() {
     const elementClasses = (element?.classes as string[])?.join(', ') || '';
 
     console.log(`  🤖 Auto-fixing: "${title}"...`);
+    broadcast('fixing', { title, status: 'searching' });
 
     try {
       // Find the source file before calling the API
       const source = await findSourceFile(captureJson);
       if (!source) {
         console.log('  ❌ Could not find source file to edit');
+        broadcast('fixed', { title, status: 'error', message: 'Could not find source file' });
         fixing = false;
         return;
       }
       console.log(`  📄 Found: ${source.path}`);
+      broadcast('fixing', { title, status: 'calling_ai', file: source.path });
 
       // Build a tight prompt — ask for search/replace only
       const prompt = [
@@ -147,7 +166,8 @@ async function main() {
         '',
         'Return ONLY a JSON array of edits. Each edit: {"old":"exact line(s) to find","new":"replacement line(s)"}',
         'Example: [{"old":"color: red;","new":"color: green;"}]',
-        'Minimal changes only. No explanation.',
+        'IMPORTANT: Minimal changes only. Do NOT remove or modify any existing code, comments, or attributes that are unrelated to the requested change.',
+        'Only change exactly what is needed to fix the issue described. No explanation.',
       ].filter(Boolean).join('\n');
 
       // Call Gemini Flash
@@ -196,6 +216,7 @@ async function main() {
 
       if (!result.trim()) {
         console.log('  ❌ Empty response from Gemini');
+        broadcast('fixed', { title, status: 'error', message: 'Empty response from AI' });
         fixing = false;
         return;
       }
@@ -210,6 +231,16 @@ async function main() {
         edits = JSON.parse(raw);
       } catch {
         console.log('  ❌ Could not parse edit response');
+        broadcast('fixed', { title, status: 'error', message: 'Could not parse AI response' });
+        fixing = false;
+        return;
+      }
+
+      // Check if cancelled
+      if (cancelRequested) {
+        cancelRequested = false;
+        console.log(`  🚫 Cancelled: "${title}"`);
+        broadcast('fixed', { title, status: 'error', message: 'Cancelled' });
         fixing = false;
         return;
       }
@@ -226,6 +257,7 @@ async function main() {
 
       if (applied === 0) {
         console.log('  ❌ No edits matched the source');
+        broadcast('fixed', { title, status: 'error', message: 'No edits matched the source' });
         fixing = false;
         return;
       }
@@ -234,12 +266,27 @@ async function main() {
       const fullPath = join(process.cwd(), source.path);
       await writeFile(fullPath, newContent);
 
+      // Store original for revert (only first time — preserves initial state)
+      if (!revertHistory.has(source.path)) {
+        revertHistory.set(source.path, { original: source.content, title });
+      }
+
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(`  ✅ Fixed: "${title}" in ${elapsed}s → ${source.path}`);
+      broadcast('fixed', { title, status: 'done', file: source.path, elapsed, edits: applied });
     } catch (err) {
       console.error('  ❌ Auto-fix error:', (err as Error).message);
+      broadcast('fixed', { title, status: 'error', message: (err as Error).message });
     } finally {
       fixing = false;
+      // Process next in queue
+      if (fixQueue.length > 0) {
+        const next = fixQueue.shift()!;
+        console.log(`  📋 Processing queued: "${next.title}" (${fixQueue.length} remaining)`);
+        autoFix(next).catch((err) => {
+          console.error('  ❌ Queued fix error:', (err as Error).message);
+        });
+      }
     }
   }
 
@@ -259,7 +306,63 @@ async function main() {
 
     if (url.pathname === '/health' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok' }));
+      res.end(JSON.stringify({ status: 'ok', watch: watchMode && !!apiKey }));
+      return;
+    }
+
+    if (url.pathname === '/events' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.write('event: connected\ndata: {}\n\n');
+      sseClients.add(res);
+      req.on('close', () => { sseClients.delete(res); });
+      return;
+    }
+
+    if (url.pathname === '/cancel' && req.method === 'POST') {
+      cancelRequested = true;
+      // Clear the queue too
+      const cleared = fixQueue.length;
+      fixQueue.length = 0;
+      console.log(`  🚫 Cancel requested (${cleared} queued items cleared)`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, cleared }));
+      return;
+    }
+
+    if (url.pathname === '/revert' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', async () => {
+        try {
+          const { file } = JSON.parse(body);
+          const fullPath = resolve(process.cwd(), file);
+          if (!fullPath.startsWith(process.cwd())) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid file path' }));
+            return;
+          }
+          const entry = revertHistory.get(file);
+          if (!entry) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'No revert available for this file' }));
+            return;
+          }
+          await writeFile(fullPath, entry.original);
+          revertHistory.delete(file);
+          console.log(`  ↩️  Reverted: ${file}`);
+          broadcast('reverted', { file, title: entry.title });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid revert request' }));
+        }
+      });
       return;
     }
 
@@ -308,6 +411,7 @@ async function main() {
 
           const title = captureJson.title;
           console.log(`[${timeLabel}] ⚡ Captured: ${title}`);
+          broadcast('capture', { title, timestamp: timeLabel });
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));

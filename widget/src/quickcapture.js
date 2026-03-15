@@ -23,10 +23,25 @@ export function startQuickCapture(options) {
   overlay = document.createElement('div');
   overlay.className = 'shotfix-overlay';
 
+  // Instruction banner at top
+  const banner = document.createElement('div');
+  banner.className = 'shotfix-banner';
+  banner.innerHTML = `
+    <span class="shotfix-banner-icon">⚡</span>
+    <span>Click an element to capture</span>
+    <kbd>ESC</kbd>
+  `;
+  overlay.appendChild(banner);
+
   // Hover highlight
   hoverHighlight = document.createElement('div');
   hoverHighlight.className = 'shotfix-hover';
   overlay.appendChild(hoverHighlight);
+
+  // Element tag tooltip
+  const tagTooltip = document.createElement('div');
+  tagTooltip.className = 'shotfix-tag';
+  overlay.appendChild(tagTooltip);
 
   document.body.appendChild(overlay);
 
@@ -37,7 +52,7 @@ export function startQuickCapture(options) {
 
   // --- Hover ---
   function onMouseMove(e) {
-    if (selectedElement) return; // Already selected, stop hovering
+    if (selectedElement) return;
     const el = getElementAtPoint(e.clientX, e.clientY);
     if (el && !isShotfixElement(el)) {
       const rect = el.getBoundingClientRect();
@@ -46,14 +61,26 @@ export function startQuickCapture(options) {
       hoverHighlight.style.top = rect.top + 'px';
       hoverHighlight.style.width = rect.width + 'px';
       hoverHighlight.style.height = rect.height + 'px';
+
+      // Show tag tooltip
+      const tag = el.tagName.toLowerCase();
+      const cls = el.className && typeof el.className === 'string'
+        ? '.' + el.className.split(/\s+/).filter(c => !c.startsWith('shotfix-')).slice(0, 2).join('.')
+        : '';
+      const id = el.id ? `#${el.id}` : '';
+      tagTooltip.textContent = `${tag}${id}${cls}`;
+      tagTooltip.style.display = 'block';
+      tagTooltip.style.left = rect.left + 'px';
+      tagTooltip.style.top = Math.max(0, rect.top - 24) + 'px';
     } else {
       hoverHighlight.style.display = 'none';
+      tagTooltip.style.display = 'none';
     }
   }
 
   // --- Single click to select ---
   function onClick(e) {
-    if (selectedElement) return; // Already selected
+    if (selectedElement) return;
     if (bar && bar.contains(e.target)) return;
 
     e.preventDefault();
@@ -68,8 +95,15 @@ export function startQuickCapture(options) {
     selectedElement = el;
     selectedInfo = info;
 
-    // Hide hover highlight
+    // Hide hover highlight and tag
     hoverHighlight.style.display = 'none';
+    tagTooltip.style.display = 'none';
+
+    // Hide banner
+    banner.classList.add('shotfix-banner-hidden');
+
+    // Change overlay to selected state
+    overlay.classList.add('shotfix-overlay-selected');
 
     // Show selection highlight
     const rect = el.getBoundingClientRect();
@@ -89,7 +123,7 @@ export function startQuickCapture(options) {
     bar = document.createElement('div');
     bar.className = 'shotfix-bar';
     bar.innerHTML = `
-      <input type="text" class="shotfix-input" placeholder="What's wrong?" />
+      <input type="text" class="shotfix-input" placeholder="What should change?" />
       <button class="shotfix-send">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/>
@@ -107,7 +141,6 @@ export function startQuickCapture(options) {
 
     let top, left;
 
-    // Vertical: prefer below, fall back to above
     if (elRect.bottom + gap + barHeight < viewportH) {
       top = elRect.bottom + gap;
     } else if (elRect.top - gap - barHeight > 0) {
@@ -116,7 +149,6 @@ export function startQuickCapture(options) {
       top = viewportH - barHeight - 24;
     }
 
-    // Horizontal: center on element, clamp to viewport
     left = elRect.left + (elRect.width / 2) - (barWidth / 2);
     left = Math.max(12, Math.min(left, viewportW - barWidth - 12));
 
@@ -181,8 +213,8 @@ export function startQuickCapture(options) {
 
       // Brief success flash
       overlay.style.display = '';
-      bar.innerHTML = `<div class="shotfix-success">Captured!</div>`;
-      setTimeout(close, 600);
+      bar.innerHTML = `<div class="shotfix-success">⚡ Sent to AI</div>`;
+      setTimeout(close, 800);
     } catch (err) {
       console.error('[Shotfix] Quick capture failed:', err);
       overlay.style.display = '';
