@@ -3,15 +3,38 @@ import { createServer } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { mkdir, writeFile, readdir, unlink, copyFile, stat, readFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline';
 
 const PORT = 2847;
+const VERSION = '0.1.0';
 
 async function main() {
   const args = process.argv.slice(2);
+
+  // --help
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+  shotfix v${VERSION} — Visual AI input for developers
+
+  Usage:
+    shotfix [options]
+
+  Options:
+    --port <n>      Server port (default: 2847)
+    --dir <path>    Captures directory (default: .shotfix/captures)
+    --no-watch      Disable auto-fix watch mode
+    --help, -h      Show this help
+
+  Environment:
+    GEMINI_API_KEY  Gemini API key for auto-fix (prompted on first run)
+`);
+    process.exit(0);
+  }
+
   const portArg = args.find((_, i) => args[i - 1] === '--port');
   const dirArg = args.find((_, i) => args[i - 1] === '--dir');
-  const watchMode = args.includes('--watch');
+  const watchMode = !args.includes('--no-watch');
 
   const port = portArg ? parseInt(portArg, 10) : PORT;
   const capturesDir = join(process.cwd(), dirArg || '.shotfix/captures');
@@ -22,9 +45,15 @@ async function main() {
 
   // Write .gitignore for .shotfix/
   try {
-    await writeFile(join(shotfixDir, '.gitignore'), 'captures/\n', { flag: 'wx' });
+    await writeFile(join(shotfixDir, '.gitignore'), 'captures/\n.env\n', { flag: 'wx' });
   } catch {
-    // Already exists, fine
+    // Already exists — make sure .env is in it
+    try {
+      const existing = await readFile(join(shotfixDir, '.gitignore'), 'utf-8');
+      if (!existing.includes('.env')) {
+        await writeFile(join(shotfixDir, '.gitignore'), existing.trimEnd() + '\n.env\n');
+      }
+    } catch {}
   }
 
   // Cleanup old captures (>1 hour)
@@ -51,13 +80,38 @@ async function main() {
     }
   }
 
-  // Resolve API key from env or noxkey
+  // Resolve API key: env var → .shotfix/.env → interactive prompt
   let apiKey = process.env.GEMINI_API_KEY || '';
-  if (!apiKey && watchMode) {
+
+  if (!apiKey) {
+    const envPath = join(shotfixDir, '.env');
     try {
-      apiKey = execSync('noxkey get shared/GEMINI_API_KEY --raw', { encoding: 'utf-8', stdio: 'pipe' }).trim();
+      const envContent = await readFile(envPath, 'utf-8');
+      const match = envContent.match(/^GEMINI_API_KEY=(.+)$/m);
+      if (match) apiKey = match[1].trim();
     } catch {
-      // Will warn at startup
+      // No .env file yet
+    }
+  }
+
+  if (!apiKey && watchMode && process.stdin.isTTY) {
+    console.log('');
+    console.log('  🔑 Shotfix needs a Gemini API key for auto-fix.');
+    console.log('     Get one free at: https://aistudio.google.com/apikey');
+    console.log('');
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    apiKey = await new Promise<string>((resolve) => {
+      rl.question('  Enter your API key: ', (answer) => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    });
+
+    if (apiKey) {
+      await mkdir(shotfixDir, { recursive: true });
+      await writeFile(join(shotfixDir, '.env'), `GEMINI_API_KEY=${apiKey}\n`);
+      console.log('  ✅ Saved to .shotfix/.env\n');
     }
   }
 
@@ -323,9 +377,25 @@ async function main() {
       return;
     }
 
+    // Serve the widget JS
+    if (url.pathname === '/widget.js' && req.method === 'GET') {
+      try {
+        const widgetPath = new URL('../widget/dist/shotfix.min.js', import.meta.url);
+        const widgetContent = await readFile(widgetPath);
+        res.writeHead(200, {
+          'Content-Type': 'application/javascript',
+          'Cache-Control': 'no-cache',
+        });
+        res.end(widgetContent);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Widget not found');
+      }
+      return;
+    }
+
     if (url.pathname === '/cancel' && req.method === 'POST') {
       cancelRequested = true;
-      // Clear the queue too
       const cleared = fixQueue.length;
       fixQueue.length = 0;
       console.log(`  🚫 Cancel requested (${cleared} queued items cleared)`);
@@ -410,7 +480,7 @@ async function main() {
           await cleanOldCaptures();
 
           const title = captureJson.title;
-          console.log(`[${timeLabel}] ⚡ Captured: ${title}`);
+          console.log(`  ⚡ Captured: ${title}`);
           broadcast('capture', { title, timestamp: timeLabel });
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -434,16 +504,22 @@ async function main() {
   });
 
   server.listen(port, () => {
-    console.log(`⚡ Shotfix dev server running on port ${port}`);
-    console.log(`  Captures saved to ${capturesDir}`);
+    console.log('');
+    console.log(`  ⚡ Shotfix v${VERSION}`);
+    console.log('');
+    console.log('  Add to your HTML:');
+    console.log(`    <script src="http://localhost:${port}/widget.js"><\/script>`);
+    console.log('    <script>Shotfix.init();<\/script>');
+    console.log('');
+    console.log(`  Server: http://localhost:${port}`);
     if (watchMode && apiKey) {
-      console.log(`  🤖 Watch mode: captures will auto-fix via Gemini Flash`);
+      console.log('  Watch:  ON (Gemini Flash)');
     } else if (watchMode) {
-      console.log(`  ⚠️  Watch mode enabled but no GEMINI_API_KEY found`);
-      console.log(`     Set env var or store with: noxkey set shared/GEMINI_API_KEY`);
+      console.log('  Watch:  ON (no API key — captures only)');
+    } else {
+      console.log('  Watch:  OFF');
     }
     console.log('');
-    console.log('Tip: Add to CLAUDE.md: "Check .shotfix/captures/latest.json and latest.png for bug captures"');
   });
 }
 

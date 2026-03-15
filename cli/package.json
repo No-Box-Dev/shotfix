@@ -8,19 +8,23 @@
     "shotfix-mcp": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "widget/dist/shotfix.min.js"
   ],
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
-    "prepublishOnly": "npm run build"
+    "build:widget": "cd ../widget && npm run build && mkdir -p ../cli/widget/dist && cp dist/shotfix.min.js ../cli/widget/dist/",
+    "prepublishOnly": "npm run build:widget && npm run build",
+    "start": "node dist/index.js"
   },
   "keywords": [
-    "mcp",
     "shotfix",
-    "claude",
     "screenshot",
     "visual-ai",
+    "auto-fix",
+    "developer-tools",
+    "ui-debug",
+    "mcp",
     "model-context-protocol"
   ],
   "repository": {
