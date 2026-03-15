@@ -6,6 +6,7 @@ import { injectStyles } from './styles.js';
 import { createTrigger } from './trigger.js';
 import { startQuickCapture } from './quickcapture.js';
 import { startConsoleCapture } from './metadata.js';
+import { connectActivity, toggleActivity, getShortcut } from './activity.js';
 
 const DEV_SERVER_URL = 'http://localhost:2847';
 
@@ -28,12 +29,15 @@ function init(options = {}) {
 }
 
 async function probeDevServer() {
+  let watchEnabled = false;
   try {
     const res = await fetch(DEV_SERVER_URL + '/health', {
       signal: AbortSignal.timeout(500),
     });
     if (res.ok) {
       config.devServerUrl = DEV_SERVER_URL;
+      const health = await res.json();
+      watchEnabled = !!health.watch;
     }
   } catch {}
 
@@ -43,20 +47,28 @@ async function probeDevServer() {
       getContext: config.getContext,
     };
 
-    // Create trigger button
-    createTrigger(() => startQuickCapture(captureOpts));
+    // Create trigger button — opens activity sidebar
+    createTrigger(() => toggleActivity());
 
-    // Keyboard shortcut: Cmd+Shift+E (Mac) / Ctrl+Shift+E (other)
+    // Configurable keyboard shortcut (reads from activity settings)
     document.addEventListener('keydown', (e) => {
-      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-      const modifier = isMac ? e.metaKey : e.ctrlKey;
-      if (modifier && e.shiftKey && e.key.toLowerCase() === 'e') {
+      const sc = getShortcut();
+      if (e.key.toLowerCase() === sc.key
+        && e.metaKey === !!sc.meta
+        && e.shiftKey === !!sc.shift
+        && e.ctrlKey === !!sc.ctrl) {
         e.preventDefault();
         startQuickCapture(captureOpts);
       }
     });
 
-    console.log('[Shotfix] Dev mode active — Cmd+Shift+E for quick capture');
+    // Connect activity sidebar (SSE feed for live updates)
+    connectActivity(config.devServerUrl);
+    if (watchEnabled) {
+      console.log('[Shotfix] Dev mode active — watch mode + activity feed');
+    } else {
+      console.log('[Shotfix] Dev mode active — Cmd+Shift+E for quick capture');
+    }
   } else {
     console.log('[Shotfix] No dev server found at localhost:2847. Run: npx shotfix');
   }
