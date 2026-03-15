@@ -2,7 +2,7 @@
 import { createServer } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { mkdir, writeFile, readdir, unlink, copyFile, stat, readFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 
 const PORT = 2847;
@@ -216,6 +216,7 @@ async function main() {
 
       if (!result.trim()) {
         console.log('  ❌ Empty response from Gemini');
+        broadcast('fixed', { title, status: 'error', message: 'Empty response from AI' });
         fixing = false;
         return;
       }
@@ -230,6 +231,7 @@ async function main() {
         edits = JSON.parse(raw);
       } catch {
         console.log('  ❌ Could not parse edit response');
+        broadcast('fixed', { title, status: 'error', message: 'Could not parse AI response' });
         fixing = false;
         return;
       }
@@ -255,6 +257,7 @@ async function main() {
 
       if (applied === 0) {
         console.log('  ❌ No edits matched the source');
+        broadcast('fixed', { title, status: 'error', message: 'No edits matched the source' });
         fixing = false;
         return;
       }
@@ -337,13 +340,18 @@ async function main() {
       req.on('end', async () => {
         try {
           const { file } = JSON.parse(body);
+          const fullPath = resolve(process.cwd(), file);
+          if (!fullPath.startsWith(process.cwd())) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid file path' }));
+            return;
+          }
           const entry = revertHistory.get(file);
           if (!entry) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'No revert available for this file' }));
             return;
           }
-          const fullPath = join(process.cwd(), file);
           await writeFile(fullPath, entry.original);
           revertHistory.delete(file);
           console.log(`  ↩️  Reverted: ${file}`);

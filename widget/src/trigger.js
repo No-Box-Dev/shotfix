@@ -10,21 +10,22 @@ const LIGHTNING_ICON = `
 
 let triggerButton = null;
 
-function getSavedShortcutLabel() {
+export function formatShortcut(sc) {
   const isMac = /mac/i.test(navigator.userAgent);
+  const parts = [];
+  if (sc.ctrl) parts.push(isMac ? '⌃' : 'Ctrl');
+  if (sc.meta) parts.push(isMac ? '⌘' : 'Win');
+  if (sc.shift) parts.push(isMac ? '⇧' : 'Shift');
+  if (sc.key) parts.push(sc.key.toUpperCase());
+  return isMac ? parts.join('') : parts.join('+');
+}
+
+function getSavedShortcutLabel() {
   try {
     const saved = localStorage.getItem('shotfix-shortcut');
-    if (saved) {
-      const sc = JSON.parse(saved);
-      const parts = [];
-      if (sc.ctrl) parts.push(isMac ? '⌃' : 'Ctrl');
-      if (sc.meta) parts.push(isMac ? '⌘' : 'Win');
-      if (sc.shift) parts.push(isMac ? '⇧' : 'Shift');
-      if (sc.key) parts.push(sc.key.toUpperCase());
-      return isMac ? parts.join('') : parts.join('+');
-    }
+    if (saved) return formatShortcut(JSON.parse(saved));
   } catch {}
-  return isMac ? '⌘⇧E' : 'Ctrl+Shift+E';
+  return formatShortcut({ key: 'e', meta: true, shift: true, ctrl: false });
 }
 
 /**

@@ -2,7 +2,7 @@
  * Activity sidebar — live feed of AI fix activity via SSE + settings tab
  */
 
-import { updateTriggerShortcut } from './trigger.js';
+import { updateTriggerShortcut, formatShortcut } from './trigger.js';
 
 let sidebar = null;
 let eventSource = null;
@@ -41,16 +41,6 @@ function loadShortcut() {
 function saveShortcut(sc) {
   shortcut = sc;
   try { localStorage.setItem('shotfix-shortcut', JSON.stringify(sc)); } catch {}
-}
-
-function formatShortcut(sc) {
-  const isMac = /mac/i.test(navigator.userAgent);
-  const parts = [];
-  if (sc.ctrl) parts.push(isMac ? '⌃' : 'Ctrl');
-  if (sc.meta) parts.push(isMac ? '⌘' : 'Win');
-  if (sc.shift) parts.push(isMac ? '⇧' : 'Shift');
-  if (sc.key) parts.push(sc.key.toUpperCase());
-  return isMac ? parts.join('') : parts.join('+');
 }
 
 function createSidebar() {
@@ -294,7 +284,6 @@ function addEntry(type, data, fromStorage = false) {
       });
 
       // Append detail after the entry
-      entry.after = detail; // store reference
       entry._detail = detail;
     } else {
       entry.innerHTML = `
@@ -403,11 +392,10 @@ function setSidebarOpen(open) {
   if (!sidebar) return;
   if (open) {
     sidebar.classList.add('shotfix-activity-open');
-    document.documentElement.style.transition = 'margin-right 0.25s ease';
-    document.documentElement.style.marginRight = '180px';
+    document.documentElement.classList.add('shotfix-sidebar-is-open');
   } else {
     sidebar.classList.remove('shotfix-activity-open');
-    document.documentElement.style.marginRight = '';
+    document.documentElement.classList.remove('shotfix-sidebar-is-open');
   }
   try { localStorage.setItem('shotfix-sidebar-open', open ? '1' : '0'); } catch {}
 }

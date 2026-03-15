@@ -240,6 +240,11 @@ const CSS = `
   right: 0;
 }
 
+.shotfix-sidebar-is-open {
+  margin-right: 180px;
+  transition: margin-right 0.25s ease;
+}
+
 .shotfix-activity-header {
   display: flex;
   align-items: center;

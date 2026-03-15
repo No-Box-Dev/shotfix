@@ -3,7 +3,7 @@
  */
 
 import { injectStyles } from './styles.js';
-import { createTrigger } from './trigger.js';
+import { createTrigger, formatShortcut } from './trigger.js';
 import { startQuickCapture } from './quickcapture.js';
 import { startConsoleCapture } from './metadata.js';
 import { connectActivity, toggleActivity, getShortcut } from './activity.js';
@@ -67,7 +67,7 @@ async function probeDevServer() {
     if (watchEnabled) {
       console.log('[Shotfix] Dev mode active — watch mode + activity feed');
     } else {
-      console.log('[Shotfix] Dev mode active — Cmd+Shift+E for quick capture');
+      console.log(`[Shotfix] Dev mode active — ${formatShortcut(getShortcut())} for quick capture`);
     }
   } else {
     console.log('[Shotfix] No dev server found at localhost:2847. Run: npx shotfix');
