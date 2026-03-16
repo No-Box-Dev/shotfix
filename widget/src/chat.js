@@ -70,11 +70,15 @@ function createChatPanel() {
     showTyping();
 
     try {
-      await fetch(`${serverUrl}/sessions/${currentSessionId}/messages`, {
+      const res = await fetch(`${serverUrl}/sessions/${currentSessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
+      if (!res.ok) {
+        hideTyping();
+        appendMessage({ role: 'assistant', text: `Failed to send (${res.status})`, timestamp: new Date().toISOString() });
+      }
     } catch (err) {
       hideTyping();
       appendMessage({ role: 'assistant', text: 'Failed to send message', timestamp: new Date().toISOString() });
@@ -160,12 +164,16 @@ export async function openChat(sessionId, url) {
   createChatPanel();
 
   currentSessionId = sessionId;
+  const requestedSessionId = sessionId;
 
   // Fetch full session
   try {
     const res = await fetch(`${serverUrl}/sessions/${sessionId}`);
     if (!res.ok) throw new Error('Failed to load session');
     const session = await res.json();
+
+    // Guard: user may have switched sessions while we were fetching
+    if (currentSessionId !== requestedSessionId) return;
 
     // Update header
     chatPanel.querySelector('.shotfix-chat-title').textContent = session.capture.title;

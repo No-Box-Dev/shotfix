@@ -2,7 +2,7 @@
  * Config management — .shotfix/config.json + .shotfix/.env for API keys
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface ShotfixConfig {
@@ -57,8 +57,25 @@ export async function loadConfig(): Promise<ShotfixConfig> {
   return cachedConfig!;
 }
 
+const VALID_PROVIDERS = new Set(['gemini', 'claude', 'openai']);
+
 export async function saveConfig(config: Partial<ShotfixConfig>): Promise<ShotfixConfig> {
   const current = await loadConfig();
+
+  // Validate provider
+  if (config.provider && !VALID_PROVIDERS.has(config.provider)) {
+    throw new Error(`Invalid provider: ${config.provider}`);
+  }
+
+  // Validate model against provider
+  if (config.model) {
+    const provider = config.provider || current.provider;
+    const validModels = PROVIDER_MODELS[provider] || [];
+    if (!validModels.includes(config.model)) {
+      throw new Error(`Invalid model "${config.model}" for provider "${provider}"`);
+    }
+  }
+
   const updated = { ...current, ...config };
   await writeFile(configPath(), JSON.stringify(updated, null, 2));
   cachedConfig = updated;
@@ -110,7 +127,10 @@ export async function setApiKey(provider: string, value: string): Promise<void> 
     lines.push(`${keyName}=${value}`);
   }
 
-  await writeFile(envPath(), lines.join('\n') + '\n');
+  const envFile = envPath();
+  await writeFile(envFile, lines.join('\n') + '\n');
+  // Restrict permissions — API keys should not be world-readable
+  await chmod(envFile, 0o600);
 }
 
 export function getKeyStatus(keys: Record<string, string>): Record<string, boolean> {

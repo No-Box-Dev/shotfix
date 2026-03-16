@@ -28,11 +28,12 @@ export function getProvider(apiKeys: Record<string, string>): AIProvider {
       if (!key) throw new Error('OPENAI_API_KEY not set');
       return new OpenAIProvider(key, model);
     }
-    case 'gemini':
-    default: {
+    case 'gemini': {
       const key = apiKeys.GEMINI_API_KEY;
       if (!key) throw new Error('GEMINI_API_KEY not set');
       return new GeminiProvider(key, model);
     }
+    default:
+      throw new Error(`Unknown provider: "${provider}". Valid providers: gemini, claude, openai`);
   }
 }

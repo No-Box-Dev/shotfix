@@ -150,6 +150,8 @@ function createSidebar() {
       const btn = sidebar.querySelector('.shotfix-dir-copy');
       btn.textContent = '✓';
       setTimeout(() => { btn.textContent = '📋'; }, 1500);
+    }).catch(() => {
+      // Clipboard not available (insecure context or permission denied)
     });
   });
 
@@ -250,6 +252,7 @@ async function setupProviderSettings() {
   // Provider buttons
   sidebar.querySelectorAll('.shotfix-provider-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
+      if (!configData) return;
       const provider = btn.dataset.provider;
       try {
         const res = await fetch(`${serverUrl}/config`, {
@@ -268,6 +271,7 @@ async function setupProviderSettings() {
 
   // Model dropdown
   sidebar.querySelector('.shotfix-model-dropdown').addEventListener('change', async (e) => {
+    if (!configData) return;
     const model = e.target.value;
     try {
       await fetch(`${serverUrl}/config`, {
@@ -281,6 +285,7 @@ async function setupProviderSettings() {
 
   // Save key
   sidebar.querySelector('.shotfix-key-save').addEventListener('click', async () => {
+    if (!configData) return;
     const input = sidebar.querySelector('.shotfix-key-input');
     const key = input.value.trim();
     if (!key) return;
@@ -450,11 +455,12 @@ async function openClaudeMdModal() {
     saveBtn.disabled = true;
     saveBtn.textContent = 'Saving...';
     try {
-      await fetch(serverUrl + '/claude-md', {
+      const res = await fetch(serverUrl + '/claude-md', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: textarea.value }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       saveBtn.textContent = 'Saved!';
       setTimeout(close, 600);
     } catch {

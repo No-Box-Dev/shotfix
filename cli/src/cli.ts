@@ -145,11 +145,23 @@ async function main() {
     }
   }
 
-  // Revert history — stores original file content before AI edits
-  const revertHistory = new Map<string, { original: string; sessionId: string }>();
+  // Revert history — stores original file content per session
+  const revertHistory = new Map<string, Map<string, string>>(); // sessionId → (file → original content)
+
+  function setRevertSnapshot(sessionId: string, filePath: string, content: string) {
+    let sessionReverts = revertHistory.get(sessionId);
+    if (!sessionReverts) {
+      sessionReverts = new Map();
+      revertHistory.set(sessionId, sessionReverts);
+    }
+    // Only store the first snapshot (original state)
+    if (!sessionReverts.has(filePath)) {
+      sessionReverts.set(filePath, content);
+    }
+  }
 
   // Fix queue
-  const fixQueue: Array<{ sessionId: string }> = [];
+  const fixQueue: Array<{ sessionId: string; messageIndex: number }> = [];
   let fixing = false;
   let cancelRequested = false;
 
@@ -214,7 +226,8 @@ async function main() {
   // Process a message in a session — find source, call AI, apply edits
   async function processMessage(sessionId: string): Promise<void> {
     if (fixing) {
-      fixQueue.push({ sessionId });
+      const messages = await getMessages(sessionId);
+      fixQueue.push({ sessionId, messageIndex: messages.length - 1 });
       console.log(`  ⏳ Queued session ${sessionId} (${fixQueue.length} in queue)`);
       return;
     }
@@ -318,10 +331,8 @@ async function main() {
       const fullPath = join(process.cwd(), source.path);
       await writeFile(fullPath, newContent);
 
-      // Store original for revert (first time only)
-      if (!revertHistory.has(source.path)) {
-        revertHistory.set(source.path, { original: source.content, sessionId });
-      }
+      // Store original for revert (per session, first snapshot only)
+      setRevertSnapshot(sessionId, source.path, source.content);
 
       // Add assistant message with diff
       const assistantMsg: Message = {
@@ -365,9 +376,23 @@ async function main() {
     });
   }
 
+  // Only allow requests from localhost origins
+  const ALLOWED_ORIGINS = new Set([
+    `http://localhost:${port}`,
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://localhost:8080',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:8080',
+  ]);
+
   const server = createServer(async (req, res) => {
-    // CORS headers for all responses
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS headers — restrict to localhost origins
+    const origin = req.headers.origin || '';
+    if (ALLOWED_ORIGINS.has(origin) || origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -491,34 +516,30 @@ async function main() {
     if (revertMatch && req.method === 'POST') {
       try {
         const sessionId = revertMatch[1];
-        const revertEntry = Array.from(revertHistory.entries()).find(
-          ([, entry]) => entry.sessionId === sessionId
-        );
-        const revertFile = revertEntry ? revertEntry[0] : null;
+        const sessionReverts = revertHistory.get(sessionId);
 
-        if (!revertFile) {
+        if (!sessionReverts || sessionReverts.size === 0) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'No revert available for this session' }));
           return;
         }
 
-        const entry = revertHistory.get(revertFile)!;
-        const fullPath = resolve(process.cwd(), revertFile);
-        if (!fullPath.startsWith(process.cwd())) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid file path' }));
-          return;
+        // Revert all files modified in this session
+        const revertedFiles: string[] = [];
+        for (const [file, original] of sessionReverts) {
+          const fullPath = resolve(process.cwd(), file);
+          if (!fullPath.startsWith(process.cwd())) continue;
+          await writeFile(fullPath, original);
+          revertedFiles.push(file);
         }
-
-        await writeFile(fullPath, entry.original);
-        revertHistory.delete(revertFile);
+        revertHistory.delete(sessionId);
 
         await updateStatus(sessionId, { status: 'pending' });
         broadcast('session:updated', { id: sessionId, status: 'pending' });
 
-        console.log(`  ↩️  Reverted: ${revertFile}`);
+        console.log(`  ↩️  Reverted session ${sessionId}: ${revertedFiles.join(', ')}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, file: revertFile }));
+        res.end(JSON.stringify({ ok: true, files: revertedFiles }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid revert request' }));
@@ -615,34 +636,7 @@ async function main() {
       return;
     }
 
-    // --- Legacy revert (backward compat) ---
-    if (url.pathname === '/revert' && req.method === 'POST') {
-      try {
-        const { file } = JSON.parse(await readBody(req));
-        const fullPath = resolve(process.cwd(), file);
-        if (!fullPath.startsWith(process.cwd())) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid file path' }));
-          return;
-        }
-        const entry = revertHistory.get(file);
-        if (!entry) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No revert available for this file' }));
-          return;
-        }
-        await writeFile(fullPath, entry.original);
-        revertHistory.delete(file);
-        console.log(`  ↩️  Reverted: ${file}`);
-        broadcast('session:updated', { id: entry.sessionId, status: 'pending' });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-      } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid revert request' }));
-      }
-      return;
-    }
+    // Legacy /revert removed — use /sessions/:id/revert instead
 
     // --- Capture ---
     if (url.pathname === '/capture' && req.method === 'POST') {
@@ -675,13 +669,19 @@ async function main() {
           context: data.context || null,
         };
 
-        // Save latest.json for MCP compat
-        const jsonContent = JSON.stringify({
+        // Save per-capture JSON with correct screenshot reference
+        const captureJsonContent = JSON.stringify({
+          ...captureData,
+          screenshot: screenshotFilename || null,
+        }, null, 2);
+        await writeFile(join(capturesDir, `${timestamp}.json`), captureJsonContent);
+
+        // latest.json uses latest.png for MCP compat
+        const latestJsonContent = JSON.stringify({
           ...captureData,
           screenshot: screenshotFilename ? 'latest.png' : null,
         }, null, 2);
-        await writeFile(join(capturesDir, `${timestamp}.json`), jsonContent);
-        await writeFile(join(capturesDir, 'latest.json'), jsonContent);
+        await writeFile(join(capturesDir, 'latest.json'), latestJsonContent);
 
         // Create session
         const sessionId = await createSession(captureData, screenshotBuffer);

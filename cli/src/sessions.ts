@@ -126,7 +126,7 @@ export async function listSessions(offset = 0, limit = 20): Promise<SessionSumma
     const dirs = await readdir(sessionsDir);
 
     // Get session info with timestamps for sorting
-    const sessions: Array<SessionSummary & { _mtime: number }> = [];
+    const sessions: SessionSummary[] = [];
 
     for (const dir of dirs) {
       try {
@@ -141,25 +141,22 @@ export async function listSessions(offset = 0, limit = 20): Promise<SessionSumma
           hasScreenshot = true;
         } catch {}
 
-        const dirStat = await stat(join(sessionsDir, dir));
-
         sessions.push({
           id: dir,
           title: capture.title,
           status: status.status,
           timestamp: capture.timestamp,
           hasScreenshot,
-          _mtime: dirStat.mtimeMs,
         });
       } catch {
         // Skip invalid session directories
       }
     }
 
-    // Sort by modification time (newest first)
-    sessions.sort((a, b) => b._mtime - a._mtime);
+    // Sort by capture timestamp (newest first) — reliable across file systems
+    sessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-    return sessions.slice(offset, offset + limit).map(({ _mtime, ...s }) => s);
+    return sessions.slice(offset, offset + limit);
   } catch {
     return [];
   }
@@ -170,12 +167,20 @@ export async function updateStatus(id: string, status: SessionStatus): Promise<v
   await writeFile(join(dir, 'status.json'), JSON.stringify(status, null, 2));
 }
 
+// Per-session write lock to prevent concurrent read-modify-write races
+const messageLocks = new Map<string, Promise<void>>();
+
 export async function addMessage(id: string, message: Message): Promise<void> {
-  const dir = sessionPath(id);
-  const raw = await readFile(join(dir, 'messages.json'), 'utf-8');
-  const messages: Message[] = JSON.parse(raw);
-  messages.push(message);
-  await writeFile(join(dir, 'messages.json'), JSON.stringify(messages, null, 2));
+  const prev = messageLocks.get(id) || Promise.resolve();
+  const current = prev.then(async () => {
+    const dir = sessionPath(id);
+    const raw = await readFile(join(dir, 'messages.json'), 'utf-8');
+    const messages: Message[] = JSON.parse(raw);
+    messages.push(message);
+    await writeFile(join(dir, 'messages.json'), JSON.stringify(messages, null, 2));
+  });
+  messageLocks.set(id, current.catch(() => {}));
+  await current;
 }
 
 export async function getMessages(id: string): Promise<Message[]> {
@@ -200,8 +205,11 @@ export async function pruneOldSessions(maxAgeDays = 7): Promise<number> {
 
     for (const dir of dirs) {
       try {
-        const dirStat = await stat(join(sessionsDir, dir));
-        if (dirStat.mtimeMs < cutoff) {
+        // Use capture timestamp for reliable age check
+        const captureRaw = await readFile(join(sessionsDir, dir, 'capture.json'), 'utf-8');
+        const capture: SessionCapture = JSON.parse(captureRaw);
+        const captureTime = new Date(capture.timestamp).getTime();
+        if (captureTime < cutoff) {
           await rm(join(sessionsDir, dir), { recursive: true });
           pruned++;
         }
