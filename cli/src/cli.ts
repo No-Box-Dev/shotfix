@@ -68,7 +68,11 @@ async function main() {
       if (!updated.includes('sessions/')) updated = updated.trimEnd() + '\nsessions/\n';
       if (!updated.includes('config.json')) updated = updated.trimEnd() + '\nconfig.json\n';
       if (updated !== existing) await writeFile(join(shotfixDir, '.gitignore'), updated);
-    } catch {}
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn(`  ⚠️ Could not update .gitignore: ${(e as Error).message}`);
+      }
+    }
   }
 
   // Prune old sessions on startup
@@ -92,8 +96,8 @@ async function main() {
   }
 
   // Find source files matching a CSS selector/classes using grep
-  async function findSourceFile(captureJson: Record<string, unknown>): Promise<{ path: string; content: string } | null> {
-    const element = (captureJson.elements as Array<Record<string, unknown>>)?.[0];
+  async function findSourceFile(capture: SessionCapture): Promise<{ path: string; content: string } | null> {
+    const element = capture.elements?.[0] as Record<string, unknown> | undefined;
     if (!element) return null;
 
     const classes = (element.classes as string[]) || [];
@@ -124,7 +128,9 @@ async function main() {
             }
           }
         }
-      } catch {}
+      } catch (e) {
+        console.warn(`  ⚠️ Source search failed for "${term}": ${(e as Error).message}`);
+      }
     }
     return null;
   }
@@ -228,7 +234,7 @@ async function main() {
       broadcast('session:updated', { id: sessionId, status: 'fixing' });
 
       // Find source file
-      const source = await findSourceFile(capture as unknown as Record<string, unknown>);
+      const source = await findSourceFile(capture);
       if (!source) {
         const errStatus: SessionStatus = { status: 'error', message: 'Could not find source file' };
         await updateStatus(sessionId, errStatus);
@@ -485,13 +491,10 @@ async function main() {
     if (revertMatch && req.method === 'POST') {
       try {
         const sessionId = revertMatch[1];
-        let revertFile: string | null = null;
-        for (const [file, entry] of revertHistory) {
-          if (entry.sessionId === sessionId) {
-            revertFile = file;
-            break;
-          }
-        }
+        const revertEntry = Array.from(revertHistory.entries()).find(
+          ([, entry]) => entry.sessionId === sessionId
+        );
+        const revertFile = revertEntry ? revertEntry[0] : null;
 
         if (!revertFile) {
           res.writeHead(404, { 'Content-Type': 'application/json' });

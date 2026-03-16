@@ -541,10 +541,6 @@ export function getShortcut() {
   return shortcut;
 }
 
-export function setCaptureCallback(fn) {
-  // unused but kept for compat
-}
-
 export function connectActivity(url) {
   serverUrl = url;
   createSidebar();

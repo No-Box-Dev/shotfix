@@ -93,14 +93,16 @@ export async function setApiKey(provider: string, value: string): Promise<void> 
   const keyName = KEY_NAMES[provider];
   if (!keyName) throw new Error(`Unknown provider: ${provider}`);
 
-  // Read existing .env
+  // Read existing .env, preserving comments and blank lines
   let lines: string[] = [];
   try {
     const content = await readFile(envPath(), 'utf-8');
-    lines = content.split('\n').filter(l => l.trim());
+    lines = content.split('\n');
+    // Remove trailing empty line from split (will re-add newline at end)
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   } catch {}
 
-  // Replace or append
+  // Replace existing key or append
   const idx = lines.findIndex(l => l.startsWith(keyName + '='));
   if (idx >= 0) {
     lines[idx] = `${keyName}=${value}`;
