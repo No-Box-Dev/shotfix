@@ -1,14 +1,46 @@
 #!/usr/bin/env node
 import { createServer } from 'node:http';
-import { request as httpsRequest } from 'node:https';
-import { mkdir, writeFile, readdir, unlink, copyFile, stat, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, copyFile, stat } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 
+import {
+  initSessions, createSession, getSession, listSessions,
+  updateStatus, addMessage, getMessages, getScreenshotPath,
+  pruneOldSessions,
+  type SessionCapture, type SessionStatus, type Message,
+} from './sessions.js';
+import { initConfig, loadConfig, saveConfig, loadApiKeys, setApiKey, getKeyStatus, getProviderModels, getDefaultModel } from './config.js';
+import { getProvider } from './providers/index.js';
+
 const PORT = 2847;
+const VERSION = '0.1.0';
 
 async function main() {
   const args = process.argv.slice(2);
+
+  // --help
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+  shotfix v${VERSION} — Visual AI input for developers
+
+  Usage:
+    shotfix [options]
+
+  Options:
+    --port <n>      Server port (default: 2847)
+    --dir <path>    Captures directory (default: .shotfix/captures)
+    --watch         Enable auto-fix watch mode
+    --help, -h      Show this help
+
+  Environment:
+    GEMINI_API_KEY      Gemini API key for auto-fix
+    ANTHROPIC_API_KEY   Claude API key
+    OPENAI_API_KEY      OpenAI API key
+`);
+    process.exit(0);
+  }
+
   const portArg = args.find((_, i) => args[i - 1] === '--port');
   const dirArg = args.find((_, i) => args[i - 1] === '--dir');
   const watchMode = args.includes('--watch');
@@ -20,42 +52,40 @@ async function main() {
   // Ensure directories exist
   await mkdir(capturesDir, { recursive: true });
 
+  // Initialize sessions and config
+  initSessions(shotfixDir);
+  initConfig(shotfixDir);
+  await loadConfig();
+
   // Write .gitignore for .shotfix/
   try {
-    await writeFile(join(shotfixDir, '.gitignore'), 'captures/\n', { flag: 'wx' });
+    await writeFile(join(shotfixDir, '.gitignore'), 'captures/\nsessions/\n.env\nconfig.json\n', { flag: 'wx' });
   } catch {
-    // Already exists, fine
+    try {
+      const existing = await readFile(join(shotfixDir, '.gitignore'), 'utf-8');
+      let updated = existing;
+      if (!updated.includes('.env')) updated = updated.trimEnd() + '\n.env\n';
+      if (!updated.includes('sessions/')) updated = updated.trimEnd() + '\nsessions/\n';
+      if (!updated.includes('config.json')) updated = updated.trimEnd() + '\nconfig.json\n';
+      if (updated !== existing) await writeFile(join(shotfixDir, '.gitignore'), updated);
+    } catch {}
   }
 
-  // Cleanup old captures (>1 hour)
-  async function cleanOldCaptures() {
-    try {
-      const files = await readdir(capturesDir);
-      const now = Date.now();
-      const ONE_HOUR = 60 * 60 * 1000;
+  // Prune old sessions on startup
+  const pruned = await pruneOldSessions(7);
+  if (pruned > 0) console.log(`  🧹 Pruned ${pruned} old session${pruned === 1 ? '' : 's'}`);
 
-      for (const file of files) {
-        if (file.startsWith('latest.')) continue;
-        const filePath = join(capturesDir, file);
-        try {
-          const fileStat = await stat(filePath);
-          if (now - fileStat.mtimeMs > ONE_HOUR) {
-            await unlink(filePath);
-          }
-        } catch {
-          // Skip files we can't stat
-        }
+  // Load API keys
+  let apiKeys = await loadApiKeys();
+
+  // Resolve API key from env or noxkey (backward compat)
+  if (!apiKeys.GEMINI_API_KEY && watchMode) {
+    try {
+      const key = execSync('noxkey get shared/GEMINI_API_KEY --raw', { encoding: 'utf-8', stdio: 'pipe' }).trim();
+      if (key) {
+        await setApiKey('gemini', key);
+        apiKeys = await loadApiKeys();
       }
-    } catch {
-      // Directory may not exist yet
-    }
-  }
-
-  // Resolve API key from env or noxkey
-  let apiKey = process.env.GEMINI_API_KEY || '';
-  if (!apiKey && watchMode) {
-    try {
-      apiKey = execSync('noxkey get shared/GEMINI_API_KEY --raw', { encoding: 'utf-8', stdio: 'pipe' }).trim();
     } catch {
       // Will warn at startup
     }
@@ -70,11 +100,8 @@ async function main() {
     const text = (element.text as string) || '';
     const cwd = process.cwd();
 
-    // Search for class names or text content in source files
     for (const term of [...classes, text].filter(Boolean)) {
-      // Skip terms with shell-dangerous characters
       if (!/^[\w\s\-_.#]+$/.test(term)) continue;
-
       try {
         const grepResult = spawnSync('grep', [
           '-rl',
@@ -92,14 +119,12 @@ async function main() {
           for (const file of files) {
             const fullPath = join(cwd, file);
             const content = await readFile(fullPath, 'utf-8');
-            if (content.length < 50000) { // Skip huge files
+            if (content.length < 50000) {
               return { path: relative(cwd, fullPath), content };
             }
           }
         }
-      } catch {
-        // grep failed, try next term
-      }
+      } catch {}
     }
     return null;
   }
@@ -115,137 +140,157 @@ async function main() {
   }
 
   // Revert history — stores original file content before AI edits
-  const revertHistory = new Map<string, { original: string; title: string }>();
+  const revertHistory = new Map<string, { original: string; sessionId: string }>();
 
-  // Call Gemini Flash directly — single API call, no CLI
-  const fixQueue: Array<Record<string, unknown>> = [];
+  // Fix queue
+  const fixQueue: Array<{ sessionId: string }> = [];
   let fixing = false;
   let cancelRequested = false;
 
-  async function autoFix(captureJson: Record<string, unknown>) {
-    if (!watchMode || !apiKey) return;
+  // Build prompt for AI — includes full context
+  function buildPrompt(
+    title: string,
+    source: { path: string; content: string },
+    capture: SessionCapture,
+    messages: Message[],
+  ): string {
+    const element = (capture.elements as Array<Record<string, unknown>>)?.[0];
+    const selector = (element?.selector as string) || '';
+    const elementClasses = ((element?.classes as string[]) || []).join(', ');
+
+    // For follow-up messages, include change history
+    const priorChanges = messages
+      .filter(m => m.role === 'assistant' && m.diff)
+      .map(m => m.diff!.map(d => `Changed: "${d.old.slice(0, 80)}" → "${d.new.slice(0, 80)}"`).join('\n'))
+      .join('\n');
+
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.text || title;
+
+    const parts = [
+      `Fix this UI issue: "${lastUserMessage}"`,
+      selector ? `Element: ${selector}` : '',
+      elementClasses ? `Classes: ${elementClasses}` : '',
+    ];
+
+    if (priorChanges) {
+      parts.push('', 'Previous changes made in this session:', priorChanges);
+    }
+
+    parts.push(
+      '',
+      `File: ${source.path}`,
+      '```',
+      source.content,
+      '```',
+      '',
+      'Return ONLY a JSON array of edits. Each edit: {"old":"exact line(s) to find","new":"replacement line(s)"}',
+      'Example: [{"old":"color: red;","new":"color: green;"}]',
+      'IMPORTANT: Minimal changes only. Do NOT remove or modify any existing code, comments, or attributes that are unrelated to the requested change.',
+      'Only change exactly what is needed to fix the issue described. No explanation.',
+    );
+
+    return parts.filter(Boolean).join('\n');
+  }
+
+  // Parse AI response into edits
+  function parseEdits(result: string): Array<{ old: string; new: string }> | null {
+    let raw = result.trim();
+    const fenceMatch = raw.match(/^```[\w]*\n([\s\S]*)\n```\s*$/);
+    if (fenceMatch) raw = fenceMatch[1].trim();
+
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  // Process a message in a session — find source, call AI, apply edits
+  async function processMessage(sessionId: string): Promise<void> {
     if (fixing) {
-      fixQueue.push(captureJson);
-      console.log(`  ⏳ Queued: "${captureJson.title}" (${fixQueue.length} in queue)`);
+      fixQueue.push({ sessionId });
+      console.log(`  ⏳ Queued session ${sessionId} (${fixQueue.length} in queue)`);
       return;
     }
 
     fixing = true;
     const startTime = Date.now();
-    const title = captureJson.title as string;
-
-    const element = (captureJson.elements as Array<Record<string, unknown>>)?.[0];
-    const selector = element?.selector || '';
-    const elementClasses = (element?.classes as string[])?.join(', ') || '';
-
-    console.log(`  🤖 Auto-fixing: "${title}"...`);
-    broadcast('fixing', { title, status: 'searching' });
 
     try {
-      // Find the source file before calling the API
-      const source = await findSourceFile(captureJson);
+      const session = await getSession(sessionId);
+      if (!session) throw new Error('Session not found');
+
+      const { capture, messages } = session;
+      const title = capture.title;
+
+      console.log(`  🤖 Processing: "${title}"...`);
+      await updateStatus(sessionId, { status: 'fixing' });
+      broadcast('session:updated', { id: sessionId, status: 'fixing' });
+
+      // Find source file
+      const source = await findSourceFile(capture as unknown as Record<string, unknown>);
       if (!source) {
+        const errStatus: SessionStatus = { status: 'error', message: 'Could not find source file' };
+        await updateStatus(sessionId, errStatus);
+        broadcast('session:updated', { id: sessionId, ...errStatus });
         console.log('  ❌ Could not find source file to edit');
-        broadcast('fixed', { title, status: 'error', message: 'Could not find source file' });
-        fixing = false;
         return;
       }
+
       console.log(`  📄 Found: ${source.path}`);
-      broadcast('fixing', { title, status: 'calling_ai', file: source.path });
 
-      // Build a tight prompt — ask for search/replace only
-      const prompt = [
-        `Fix this UI issue: "${title}"`,
-        selector ? `Element: ${selector}` : '',
-        elementClasses ? `Classes: ${elementClasses}` : '',
-        '',
-        `File: ${source.path}`,
-        '```',
-        source.content,
-        '```',
-        '',
-        'Return ONLY a JSON array of edits. Each edit: {"old":"exact line(s) to find","new":"replacement line(s)"}',
-        'Example: [{"old":"color: red;","new":"color: green;"}]',
-        'IMPORTANT: Minimal changes only. Do NOT remove or modify any existing code, comments, or attributes that are unrelated to the requested change.',
-        'Only change exactly what is needed to fix the issue described. No explanation.',
-      ].filter(Boolean).join('\n');
+      // Get current file content (may have been modified by prior edits in this session)
+      let currentContent: string;
+      try {
+        currentContent = await readFile(join(process.cwd(), source.path), 'utf-8');
+      } catch {
+        currentContent = source.content;
+      }
+      source.content = currentContent;
 
-      // Call Gemini Flash
-      const body = JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0,
-          maxOutputTokens: 1024,
-        },
-      });
+      // Read screenshot for vision-capable providers
+      let screenshotBuffer: Buffer | undefined;
+      try {
+        screenshotBuffer = await readFile(getScreenshotPath(sessionId));
+      } catch {}
 
-      const result = await new Promise<string>((resolve, reject) => {
-        const req = httpsRequest(
-          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-          { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey } },
-          (res) => {
-            let data = '';
-            res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-            res.on('end', () => {
-              clearTimeout(timeout);
-              if (res.statusCode !== 200) {
-                reject(new Error(`Gemini API ${res.statusCode}: ${data}`));
-                return;
-              }
-              try {
-                const json = JSON.parse(data);
-                const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                resolve(text);
-              } catch (e) {
-                reject(e);
-              }
-            });
-          }
-        );
-        const timeout = setTimeout(() => {
-          req.destroy();
-          reject(new Error('Gemini API request timed out'));
-        }, 30000);
-        req.on('error', (err) => {
-          clearTimeout(timeout);
-          reject(err);
-        });
-        req.write(body);
-        req.end();
-      });
+      // Build prompt and call AI
+      const prompt = buildPrompt(title, source, capture, messages);
+
+      // Reload keys in case user just set one
+      apiKeys = await loadApiKeys();
+      const provider = getProvider(apiKeys);
+      console.log(`  🧠 Calling ${provider.name}...`);
+
+      const result = await provider.generateFix(prompt, screenshotBuffer);
 
       if (!result.trim()) {
-        console.log('  ❌ Empty response from Gemini');
-        broadcast('fixed', { title, status: 'error', message: 'Empty response from AI' });
-        fixing = false;
+        const errStatus: SessionStatus = { status: 'error', message: 'Empty response from AI' };
+        await updateStatus(sessionId, errStatus);
+        broadcast('session:updated', { id: sessionId, ...errStatus });
+        console.log('  ❌ Empty response from AI');
         return;
       }
 
-      // Parse JSON edits from response (strip markdown fences if present)
-      let raw = result.trim();
-      const fenceMatch = raw.match(/^```[\w]*\n([\s\S]*)\n```\s*$/);
-      if (fenceMatch) raw = fenceMatch[1].trim();
-
-      let edits: Array<{ old: string; new: string }>;
-      try {
-        edits = JSON.parse(raw);
-      } catch {
+      const edits = parseEdits(result);
+      if (!edits) {
+        const errStatus: SessionStatus = { status: 'error', message: 'Could not parse AI response' };
+        await updateStatus(sessionId, errStatus);
+        broadcast('session:updated', { id: sessionId, ...errStatus });
         console.log('  ❌ Could not parse edit response');
-        broadcast('fixed', { title, status: 'error', message: 'Could not parse AI response' });
-        fixing = false;
         return;
       }
 
-      // Check if cancelled
       if (cancelRequested) {
         cancelRequested = false;
+        const errStatus: SessionStatus = { status: 'error', message: 'Cancelled' };
+        await updateStatus(sessionId, errStatus);
+        broadcast('session:updated', { id: sessionId, ...errStatus });
         console.log(`  🚫 Cancelled: "${title}"`);
-        broadcast('fixed', { title, status: 'error', message: 'Cancelled' });
-        fixing = false;
         return;
       }
 
-      // Apply edits to source
+      // Apply edits
       let newContent = source.content;
       let applied = 0;
       for (const edit of edits) {
@@ -256,44 +301,68 @@ async function main() {
       }
 
       if (applied === 0) {
+        const errStatus: SessionStatus = { status: 'error', message: 'No edits matched the source' };
+        await updateStatus(sessionId, errStatus);
+        broadcast('session:updated', { id: sessionId, ...errStatus });
         console.log('  ❌ No edits matched the source');
-        broadcast('fixed', { title, status: 'error', message: 'No edits matched the source' });
-        fixing = false;
         return;
       }
 
-      // Write the fixed file
+      // Write file
       const fullPath = join(process.cwd(), source.path);
       await writeFile(fullPath, newContent);
 
-      // Store original for revert (only first time — preserves initial state)
+      // Store original for revert (first time only)
       if (!revertHistory.has(source.path)) {
-        revertHistory.set(source.path, { original: source.content, title });
+        revertHistory.set(source.path, { original: source.content, sessionId });
       }
 
+      // Add assistant message with diff
+      const assistantMsg: Message = {
+        role: 'assistant',
+        text: `Applied ${applied} edit${applied === 1 ? '' : 's'} to ${source.path}`,
+        diff: edits.filter(e => source.content.includes(e.old)),
+        timestamp: new Date().toISOString(),
+      };
+      await addMessage(sessionId, assistantMsg);
+
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const fixedStatus: SessionStatus = { status: 'fixed', file: source.path, edits: applied, elapsed };
+      await updateStatus(sessionId, fixedStatus);
+      broadcast('session:updated', { id: sessionId, ...fixedStatus, title });
+
       console.log(`  ✅ Fixed: "${title}" in ${elapsed}s → ${source.path}`);
-      broadcast('fixed', { title, status: 'done', file: source.path, elapsed, edits: applied });
     } catch (err) {
-      console.error('  ❌ Auto-fix error:', (err as Error).message);
-      broadcast('fixed', { title, status: 'error', message: (err as Error).message });
+      const errMsg = (err as Error).message;
+      console.error('  ❌ Process error:', errMsg);
+      const errStatus: SessionStatus = { status: 'error', message: errMsg };
+      await updateStatus(sessionId, errStatus);
+      broadcast('session:updated', { id: sessionId, ...errStatus });
     } finally {
       fixing = false;
-      // Process next in queue
       if (fixQueue.length > 0) {
         const next = fixQueue.shift()!;
-        console.log(`  📋 Processing queued: "${next.title}" (${fixQueue.length} remaining)`);
-        autoFix(next).catch((err) => {
+        console.log(`  📋 Processing queued session (${fixQueue.length} remaining)`);
+        processMessage(next.sessionId).catch((err) => {
           console.error('  ❌ Queued fix error:', (err as Error).message);
         });
       }
     }
   }
 
+  // Helper to read JSON body from request
+  function readBody(req: import('node:http').IncomingMessage): Promise<string> {
+    return new Promise((resolve) => {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => resolve(body));
+    });
+  }
+
   const server = createServer(async (req, res) => {
     // CORS headers for all responses
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
@@ -304,12 +373,15 @@ async function main() {
 
     const url = new URL(req.url || '/', `http://localhost:${port}`);
 
+    // --- Health ---
     if (url.pathname === '/health' && req.method === 'GET') {
+      const config = await loadConfig();
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', watch: watchMode && !!apiKey }));
+      res.end(JSON.stringify({ status: 'ok', watch: watchMode && Object.values(apiKeys).some(Boolean), provider: config.provider }));
       return;
     }
 
+    // --- SSE ---
     if (url.pathname === '/events' && req.method === 'GET') {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -323,9 +395,215 @@ async function main() {
       return;
     }
 
+    // --- Widget JS ---
+    if (url.pathname === '/widget.js' && req.method === 'GET') {
+      try {
+        const widgetPath = new URL('../widget/dist/shotfix.min.js', import.meta.url);
+        const widgetContent = await readFile(widgetPath);
+        res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-cache' });
+        res.end(widgetContent);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Widget not found');
+      }
+      return;
+    }
+
+    // --- Sessions ---
+    if (url.pathname === '/sessions' && req.method === 'GET') {
+      const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+      const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+      const sessions = await listSessions(offset, limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(sessions));
+      return;
+    }
+
+    const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
+    if (sessionMatch && req.method === 'GET') {
+      const session = await getSession(sessionMatch[1]);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(session));
+      return;
+    }
+
+    const screenshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/screenshot$/);
+    if (screenshotMatch && req.method === 'GET') {
+      try {
+        const imgPath = getScreenshotPath(screenshotMatch[1]);
+        const imgBuffer = await readFile(imgPath);
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' });
+        res.end(imgBuffer);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Screenshot not found');
+      }
+      return;
+    }
+
+    const messageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+    if (messageMatch && req.method === 'POST') {
+      try {
+        const body = JSON.parse(await readBody(req));
+        const sessionId = messageMatch[1];
+        const session = await getSession(sessionId);
+        if (!session) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Session not found' }));
+          return;
+        }
+
+        const userMsg: Message = {
+          role: 'user',
+          text: body.text,
+          timestamp: new Date().toISOString(),
+        };
+        await addMessage(sessionId, userMsg);
+        await updateStatus(sessionId, { status: 'chatting' });
+        broadcast('session:updated', { id: sessionId, status: 'chatting' });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+
+        // Process in background
+        processMessage(sessionId).catch(err => {
+          console.error('  ❌ Message processing error:', (err as Error).message);
+        });
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+      }
+      return;
+    }
+
+    const revertMatch = url.pathname.match(/^\/sessions\/([^/]+)\/revert$/);
+    if (revertMatch && req.method === 'POST') {
+      try {
+        const sessionId = revertMatch[1];
+        let revertFile: string | null = null;
+        for (const [file, entry] of revertHistory) {
+          if (entry.sessionId === sessionId) {
+            revertFile = file;
+            break;
+          }
+        }
+
+        if (!revertFile) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No revert available for this session' }));
+          return;
+        }
+
+        const entry = revertHistory.get(revertFile)!;
+        const fullPath = resolve(process.cwd(), revertFile);
+        if (!fullPath.startsWith(process.cwd())) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid file path' }));
+          return;
+        }
+
+        await writeFile(fullPath, entry.original);
+        revertHistory.delete(revertFile);
+
+        await updateStatus(sessionId, { status: 'pending' });
+        broadcast('session:updated', { id: sessionId, status: 'pending' });
+
+        console.log(`  ↩️  Reverted: ${revertFile}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, file: revertFile }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid revert request' }));
+      }
+      return;
+    }
+
+    // --- Config ---
+    if (url.pathname === '/config' && req.method === 'GET') {
+      const config = await loadConfig();
+      const keys = await loadApiKeys();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...config,
+        keys: getKeyStatus(keys),
+        models: getProviderModels(),
+      }));
+      return;
+    }
+
+    if (url.pathname === '/config' && req.method === 'PUT') {
+      try {
+        const body = JSON.parse(await readBody(req));
+        const updated = await saveConfig({
+          provider: body.provider,
+          model: body.model,
+        });
+        apiKeys = await loadApiKeys();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(updated));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid config' }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/config/keys' && req.method === 'PUT') {
+      try {
+        const body = JSON.parse(await readBody(req));
+        if (body.provider && body.key) {
+          await setApiKey(body.provider, body.key);
+          apiKeys = await loadApiKeys();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, keys: getKeyStatus(apiKeys) }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'provider and key required' }));
+        }
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+      }
+      return;
+    }
+
+    // --- CLAUDE.md ---
+    if (url.pathname === '/claude-md' && req.method === 'GET') {
+      const claudePath = join(process.cwd(), 'CLAUDE.md');
+      try {
+        const content = await readFile(claudePath, 'utf-8');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ content }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ content: '' }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/claude-md' && req.method === 'PUT') {
+      try {
+        const { content } = JSON.parse(await readBody(req));
+        const claudePath = join(process.cwd(), 'CLAUDE.md');
+        await writeFile(claudePath, content);
+        console.log('  📝 CLAUDE.md updated');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+      }
+      return;
+    }
+
+    // --- Cancel ---
     if (url.pathname === '/cancel' && req.method === 'POST') {
       cancelRequested = true;
-      // Clear the queue too
       const cleared = fixQueue.length;
       fixQueue.length = 0;
       console.log(`  🚫 Cancel requested (${cleared} queued items cleared)`);
@@ -334,98 +612,94 @@ async function main() {
       return;
     }
 
+    // --- Legacy revert (backward compat) ---
     if (url.pathname === '/revert' && req.method === 'POST') {
-      let body = '';
-      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-      req.on('end', async () => {
-        try {
-          const { file } = JSON.parse(body);
-          const fullPath = resolve(process.cwd(), file);
-          if (!fullPath.startsWith(process.cwd())) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Invalid file path' }));
-            return;
-          }
-          const entry = revertHistory.get(file);
-          if (!entry) {
-            res.writeHead(404, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'No revert available for this file' }));
-            return;
-          }
-          await writeFile(fullPath, entry.original);
-          revertHistory.delete(file);
-          console.log(`  ↩️  Reverted: ${file}`);
-          broadcast('reverted', { file, title: entry.title });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-        } catch (err) {
+      try {
+        const { file } = JSON.parse(await readBody(req));
+        const fullPath = resolve(process.cwd(), file);
+        if (!fullPath.startsWith(process.cwd())) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid revert request' }));
+          res.end(JSON.stringify({ error: 'Invalid file path' }));
+          return;
         }
-      });
+        const entry = revertHistory.get(file);
+        if (!entry) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No revert available for this file' }));
+          return;
+        }
+        await writeFile(fullPath, entry.original);
+        revertHistory.delete(file);
+        console.log(`  ↩️  Reverted: ${file}`);
+        broadcast('session:updated', { id: entry.sessionId, status: 'pending' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid revert request' }));
+      }
       return;
     }
 
+    // --- Capture ---
     if (url.pathname === '/capture' && req.method === 'POST') {
-      let body = '';
-      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-      req.on('end', async () => {
-        try {
-          const data = JSON.parse(body);
-          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const timeLabel = new Date().toLocaleTimeString('en-US', { hour12: false });
+      try {
+        const data = JSON.parse(await readBody(req));
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
-          // Extract and save screenshot PNG
-          let screenshotFilename: string | null = null;
-          if (data.screenshot) {
-            const base64Data = data.screenshot.replace(/^data:image\/\w+;base64,/, '');
-            const pngBuffer = Buffer.from(base64Data, 'base64');
+        // Extract screenshot PNG
+        let screenshotBuffer: Buffer | undefined;
+        let screenshotFilename: string | null = null;
+        if (data.screenshot) {
+          const base64Data = data.screenshot.replace(/^data:image\/\w+;base64,/, '');
+          screenshotBuffer = Buffer.from(base64Data, 'base64');
+          screenshotFilename = `${timestamp}.png`;
+          await writeFile(join(capturesDir, screenshotFilename), screenshotBuffer);
+          await copyFile(join(capturesDir, screenshotFilename), join(capturesDir, 'latest.png'));
+        }
 
-            screenshotFilename = `${timestamp}.png`;
-            await writeFile(join(capturesDir, screenshotFilename), pngBuffer);
-            await copyFile(join(capturesDir, screenshotFilename), join(capturesDir, 'latest.png'));
-          }
+        // Build capture data
+        const captureData: SessionCapture = {
+          title: data.title || 'Untitled capture',
+          description: data.description || '',
+          url: data.metadata?.url || '',
+          timestamp: data.metadata?.timestamp || new Date().toISOString(),
+          browser: data.metadata?.browser || '',
+          viewport: data.metadata?.viewport || '',
+          consoleErrors: data.metadata?.consoleErrors || [],
+          urlEntities: data.metadata?.urlEntities || {},
+          elements: data.elements || [],
+          context: data.context || null,
+        };
 
-          // Build JSON (without base64 screenshot, reference file instead)
-          const captureJson = {
-            title: data.title || 'Untitled capture',
-            description: data.description || '',
-            url: data.metadata?.url || '',
-            timestamp: data.metadata?.timestamp || new Date().toISOString(),
-            screenshot: screenshotFilename ? 'latest.png' : null,
-            browser: data.metadata?.browser || '',
-            viewport: data.metadata?.viewport || '',
-            consoleErrors: data.metadata?.consoleErrors || [],
-            urlEntities: data.metadata?.urlEntities || {},
-            elements: data.elements || [],
-            context: data.context || null,
-          };
+        // Save latest.json for MCP compat
+        const jsonContent = JSON.stringify({
+          ...captureData,
+          screenshot: screenshotFilename ? 'latest.png' : null,
+        }, null, 2);
+        await writeFile(join(capturesDir, `${timestamp}.json`), jsonContent);
+        await writeFile(join(capturesDir, 'latest.json'), jsonContent);
 
-          const jsonFilename = `${timestamp}.json`;
-          const jsonContent = JSON.stringify(captureJson, null, 2);
-          await writeFile(join(capturesDir, jsonFilename), jsonContent);
-          await writeFile(join(capturesDir, 'latest.json'), jsonContent);
+        // Create session
+        const sessionId = await createSession(captureData, screenshotBuffer);
 
-          // Clean old captures
-          await cleanOldCaptures();
+        console.log(`  ⚡ Captured: ${captureData.title} (session: ${sessionId})`);
+        broadcast('session:created', { id: sessionId, title: captureData.title, status: 'pending', timestamp: captureData.timestamp });
 
-          const title = captureJson.title;
-          console.log(`[${timeLabel}] ⚡ Captured: ${title}`);
-          broadcast('capture', { title, timestamp: timeLabel });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, sessionId }));
 
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-
-          // Trigger auto-fix in watch mode (after response sent)
-          autoFix(captureJson).catch((err) => {
+        // Auto-fix in watch mode
+        if (watchMode && Object.values(apiKeys).some(Boolean)) {
+          processMessage(sessionId).catch((err) => {
             console.error('  ❌ Unexpected auto-fix error:', (err as Error).message);
           });
-        } catch (err) {
-          console.error('Failed to process capture:', err);
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid capture data' }));
         }
-      });
+      } catch (err) {
+        console.error('Failed to process capture:', err);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid capture data' }));
+      }
       return;
     }
 
@@ -434,12 +708,12 @@ async function main() {
   });
 
   server.listen(port, () => {
-    console.log(`⚡ Shotfix dev server running on port ${port}`);
+    console.log(`⚡ Shotfix v${VERSION} dev server running on port ${port}`);
     console.log(`  Captures saved to ${capturesDir}`);
-    if (watchMode && apiKey) {
-      console.log(`  🤖 Watch mode: captures will auto-fix via Gemini Flash`);
+    if (watchMode && Object.values(apiKeys).some(Boolean)) {
+      console.log(`  🤖 Watch mode: captures will auto-fix`);
     } else if (watchMode) {
-      console.log(`  ⚠️  Watch mode enabled but no GEMINI_API_KEY found`);
+      console.log(`  ⚠️  Watch mode enabled but no API key found`);
       console.log(`     Set env var or store with: noxkey set shared/GEMINI_API_KEY`);
     }
     console.log('');
