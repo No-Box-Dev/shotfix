@@ -308,6 +308,7 @@ const CSS = `
 .shotfix-settings {
   padding: 14px 12px;
   overflow-y: auto;
+  flex: 1;
 }
 
 .shotfix-setting-group {
@@ -432,104 +433,370 @@ const CSS = `
 .shotfix-activity-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 0;
+  padding: 4px 0;
 }
 
-.shotfix-activity-entry {
+/* ── Session cards ── */
+.shotfix-session-card {
   display: flex;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid rgba(255,255,255,0.04);
-  animation: shotfix-slidein 0.2s ease;
+  cursor: pointer;
+  transition: background 0.15s;
   align-items: center;
 }
 
-@keyframes shotfix-slidein {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: translateY(0); }
+.shotfix-session-card:hover {
+  background: rgba(255,255,255,0.06);
 }
 
-.shotfix-entry-icon {
+.shotfix-session-active {
+  background: rgba(155, 120, 244, 0.12);
+  border-left: 2px solid #9B78F4;
+}
+
+.shotfix-session-thumb {
+  width: 32px;
+  height: 24px;
+  border-radius: 3px;
+  object-fit: cover;
   flex-shrink: 0;
-  width: 16px;
-  text-align: center;
-  font-size: 12px;
-  line-height: 16px;
+  background: rgba(255,255,255,0.06);
 }
 
-.shotfix-entry-body {
+.shotfix-session-thumb-empty {
+  width: 32px;
+  height: 24px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.06);
+}
+
+.shotfix-session-body {
   min-width: 0;
+  flex: 1;
 }
 
-.shotfix-entry-title {
+.shotfix-session-title {
   font-size: 11px;
   color: #f0f0f0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.3;
 }
 
-.shotfix-entry-meta {
+.shotfix-session-meta {
   font-size: 10px;
   color: #888;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   margin-top: 1px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.shotfix-entry-expand {
-  margin-left: auto;
+.shotfix-session-status {
+  display: inline-flex;
+  align-items: center;
+}
+
+.shotfix-empty {
+  padding: 20px 12px;
+  text-align: center;
   color: #666;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ── Provider settings ── */
+.shotfix-provider-selector {
+  display: flex;
+  gap: 4px;
+}
+
+.shotfix-provider-btn {
+  flex: 1;
+  padding: 7px 4px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #aaa;
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.shotfix-provider-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: #ddd;
+}
+
+.shotfix-provider-active {
+  background: rgba(155, 120, 244, 0.2);
+  border-color: #9B78F4;
+  color: #c4b5fd;
+}
+
+.shotfix-model-dropdown {
+  width: 100%;
+  padding: 7px 10px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #e0e0e0;
+  font-size: 11px;
+  font-family: inherit;
+  border-radius: 6px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.shotfix-model-dropdown option {
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.shotfix-key-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.shotfix-key-input {
+  flex: 1;
+  padding: 7px 10px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #e0e0e0;
+  font-size: 11px;
+  font-family: 'SF Mono', Monaco, monospace;
+  border-radius: 6px;
+  outline: none;
+}
+
+.shotfix-key-input:focus {
+  border-color: rgba(155, 120, 244, 0.5);
+}
+
+.shotfix-key-status {
   font-size: 14px;
-  flex-shrink: 0;
   width: 20px;
   text-align: center;
-  transition: color 0.15s;
+  flex-shrink: 0;
 }
 
-.shotfix-activity-entry:hover .shotfix-entry-expand {
-  color: #ccc;
+.shotfix-key-set {
+  color: #22c55e;
 }
 
-.shotfix-entry-detail {
-  padding: 6px 12px 10px 36px;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
-  animation: shotfix-slidein 0.15s ease;
-}
-
-.shotfix-detail-file {
-  font-size: 12px;
+.shotfix-key-save {
+  width: 100%;
+  padding: 6px 12px;
+  background: rgba(155, 120, 244, 0.15);
   color: #c4b5fd;
-  font-family: 'SF Mono', Monaco, monospace;
-  margin-bottom: 4px;
+  border: 1px solid rgba(155, 120, 244, 0.25);
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
 }
 
-.shotfix-detail-stats {
+.shotfix-key-save:hover {
+  background: rgba(155, 120, 244, 0.25);
+}
+
+.shotfix-key-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Directory path + copy */
+.shotfix-dir-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.shotfix-dir-path {
+  font-size: 11px;
+  font-family: 'SF Mono', Monaco, monospace;
+  color: #c4b5fd;
+  flex: 1;
+}
+
+.shotfix-dir-copy {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.shotfix-dir-copy:hover {
+  opacity: 1;
+}
+
+/* Settings description text */
+.shotfix-setting-desc {
   font-size: 11px;
   color: #888;
   margin-bottom: 8px;
+  line-height: 1.4;
 }
 
-.shotfix-revert-btn {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.25);
+/* CLAUDE.md button */
+.shotfix-claudemd-btn {
+  background: rgba(155, 120, 244, 0.15);
+  color: #c4b5fd;
+  border: 1px solid rgba(155, 120, 244, 0.25);
   font-size: 12px;
   font-family: inherit;
-  padding: 5px 14px;
+  padding: 6px 14px;
   border-radius: 6px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s;
+  width: 100%;
 }
 
-.shotfix-revert-btn:hover {
-  background: rgba(239, 68, 68, 0.25);
-  border-color: rgba(239, 68, 68, 0.4);
+.shotfix-claudemd-btn:hover {
+  background: rgba(155, 120, 244, 0.25);
 }
 
-.shotfix-revert-btn:disabled {
-  opacity: 0.5;
+/* Modal overlay */
+.shotfix-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  animation: shotfix-fade-in 0.15s ease;
+}
+
+@keyframes shotfix-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.shotfix-modal {
+  background: #1a1a2e;
+  border-radius: 12px;
+  width: 520px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  animation: shotfix-scale-in 0.15s ease;
+}
+
+@keyframes shotfix-scale-in {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.shotfix-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.shotfix-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: white;
+  font-family: 'SF Mono', Monaco, monospace;
+}
+
+.shotfix-modal-close {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.shotfix-modal-close:hover {
+  color: white;
+}
+
+.shotfix-modal-editor {
+  flex: 1;
+  min-height: 300px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border: none;
+  color: #e0e0e0;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+}
+
+.shotfix-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.shotfix-modal-cancel {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #aaa;
+  font-size: 12px;
+  font-family: inherit;
+  padding: 6px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.shotfix-modal-cancel:hover {
+  color: white;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.shotfix-modal-save {
+  background: #9B78F4;
+  color: white;
+  border: none;
+  font-size: 12px;
+  font-family: inherit;
+  padding: 6px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.shotfix-modal-save:hover {
+  background: #8560e6;
+}
+
+.shotfix-modal-save:disabled {
+  opacity: 0.6;
   cursor: not-allowed;
 }
 
@@ -568,6 +835,248 @@ const CSS = `
 
 @keyframes shotfix-spin {
   to { transform: rotate(360deg); }
+}
+
+/* ── Chat panel ── */
+.shotfix-chat {
+  position: fixed;
+  top: 0;
+  right: -340px;
+  width: 340px;
+  height: 100vh;
+  background: #16162a;
+  color: #e0e0e0;
+  z-index: 2147483644;
+  transition: right 0.25s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -2px 0 16px rgba(0,0,0,0.3);
+  font-size: 13px;
+}
+
+.shotfix-chat-open {
+  right: 180px;
+}
+
+.shotfix-chat-is-open {
+  margin-right: 520px;
+  transition: margin-right 0.25s ease;
+}
+
+.shotfix-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  gap: 10px;
+}
+
+.shotfix-chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.shotfix-chat-thumb {
+  width: 28px;
+  height: 20px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.shotfix-chat-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shotfix-chat-close {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.5);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+
+.shotfix-chat-close:hover {
+  color: white;
+}
+
+/* Messages */
+.shotfix-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shotfix-chat-msg {
+  max-width: 90%;
+  animation: shotfix-msg-in 0.15s ease;
+}
+
+@keyframes shotfix-msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.shotfix-chat-msg-user {
+  align-self: flex-end;
+}
+
+.shotfix-chat-msg-user .shotfix-chat-msg-text {
+  background: #9B78F4;
+  color: white;
+  border-radius: 12px 12px 2px 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.shotfix-chat-msg-assistant {
+  align-self: flex-start;
+}
+
+.shotfix-chat-msg-assistant .shotfix-chat-msg-text {
+  background: rgba(255,255,255,0.08);
+  color: #e0e0e0;
+  border-radius: 12px 12px 12px 2px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.shotfix-chat-msg-time {
+  font-size: 10px;
+  color: #666;
+  margin-top: 2px;
+  padding: 0 4px;
+}
+
+.shotfix-chat-msg-user .shotfix-chat-msg-time {
+  text-align: right;
+}
+
+/* Typing indicator */
+.shotfix-chat-typing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  color: #888;
+  font-size: 12px;
+  animation: shotfix-fade-in 0.15s ease;
+}
+
+/* Diff view */
+.shotfix-chat-diff {
+  margin-top: 6px;
+}
+
+.shotfix-chat-diff summary {
+  font-size: 11px;
+  color: #9B78F4;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.shotfix-chat-diff summary:hover {
+  color: #c4b5fd;
+}
+
+.shotfix-chat-diff-code {
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.shotfix-diff-del {
+  color: #f87171;
+  display: block;
+}
+
+.shotfix-diff-add {
+  color: #4ade80;
+  display: block;
+}
+
+/* Input bar */
+.shotfix-chat-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.shotfix-chat-input {
+  flex: 1;
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #e0e0e0;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.shotfix-chat-input:focus {
+  border-color: rgba(155, 120, 244, 0.5);
+}
+
+.shotfix-chat-input::placeholder {
+  color: #666;
+}
+
+.shotfix-chat-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #9B78F4;
+  color: white;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.shotfix-chat-send:hover {
+  background: #8560e6;
+}
+
+.shotfix-chat-send:disabled {
+  background: #555;
+  cursor: not-allowed;
+}
+
+.shotfix-chat-send svg {
+  width: 14px;
+  height: 14px;
 }
 `;
 

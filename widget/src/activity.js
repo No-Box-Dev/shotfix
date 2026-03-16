@@ -1,30 +1,18 @@
 /**
- * Activity sidebar — live feed of AI fix activity via SSE + settings tab
+ * Activity sidebar — session list + settings (provider config, shortcuts)
  */
 
 import { updateTriggerShortcut, formatShortcut } from './trigger.js';
 
 let sidebar = null;
 let eventSource = null;
-let entries = loadEntries();
+let sessions = [];
 let currentTab = 'activity';
-let captureCallback = null;
 let serverUrl = null;
-const MAX_ENTRIES = 50;
-
-function loadEntries() {
-  try {
-    const saved = localStorage.getItem('shotfix-activity');
-    if (saved) return JSON.parse(saved);
-  } catch {}
-  return [];
-}
-
-function saveEntries() {
-  try {
-    localStorage.setItem('shotfix-activity', JSON.stringify(entries.slice(0, MAX_ENTRIES)));
-  } catch {}
-}
+let chatModule = null;
+let activeSessionId = null;
+let sseReconnectDelay = 1000;
+let sseReconnectTimer = null;
 
 // Default shortcut
 const DEFAULT_SHORTCUT = { key: 'e', meta: true, shift: true, ctrl: false };
@@ -43,6 +31,33 @@ function saveShortcut(sc) {
   try { localStorage.setItem('shotfix-shortcut', JSON.stringify(sc)); } catch {}
 }
 
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function relativeTime(timestamp) {
+  const diff = Date.now() - new Date(timestamp).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function statusIcon(status) {
+  switch (status) {
+    case 'pending': return '⏳';
+    case 'fixing': return '<span class="shotfix-spinner"></span>';
+    case 'fixed': return '✅';
+    case 'error': return '❌';
+    case 'chatting': return '<span class="shotfix-spinner"></span>';
+    default: return '⚡';
+  }
+}
+
 function createSidebar() {
   if (sidebar) return sidebar;
 
@@ -52,7 +67,7 @@ function createSidebar() {
     <div class="shotfix-activity-header">
       <span class="shotfix-activity-dot"></span>
       <div class="shotfix-tabs">
-        <button class="shotfix-tab shotfix-tab-active" data-tab="activity">Activity</button>
+        <button class="shotfix-tab shotfix-tab-active" data-tab="activity">Sessions</button>
         <button class="shotfix-tab" data-tab="settings">Settings</button>
       </div>
       <button class="shotfix-activity-close" aria-label="Close">&times;</button>
@@ -62,6 +77,28 @@ function createSidebar() {
     </div>
     <div class="shotfix-tab-content shotfix-tab-settings" style="display:none">
       <div class="shotfix-settings">
+        <div class="shotfix-setting-group">
+          <label class="shotfix-setting-label">AI Provider</label>
+          <div class="shotfix-provider-selector">
+            <button class="shotfix-provider-btn" data-provider="gemini">Gemini</button>
+            <button class="shotfix-provider-btn" data-provider="claude">Claude</button>
+            <button class="shotfix-provider-btn" data-provider="openai">OpenAI</button>
+          </div>
+        </div>
+        <div class="shotfix-setting-group">
+          <label class="shotfix-setting-label">Model</label>
+          <div class="shotfix-model-selector">
+            <select class="shotfix-model-dropdown"></select>
+          </div>
+        </div>
+        <div class="shotfix-setting-group">
+          <label class="shotfix-setting-label">API Key</label>
+          <div class="shotfix-key-input-row">
+            <input type="password" class="shotfix-key-input" placeholder="Enter API key..." />
+            <span class="shotfix-key-status"></span>
+          </div>
+          <button class="shotfix-key-save">Save Key</button>
+        </div>
         <div class="shotfix-setting-group">
           <label class="shotfix-setting-label">Capture Shortcut</label>
           <div class="shotfix-shortcut-display">
@@ -76,15 +113,25 @@ function createSidebar() {
             </div>
           </div>
         </div>
+        <div class="shotfix-setting-group">
+          <label class="shotfix-setting-label">Captures Directory</label>
+          <div class="shotfix-dir-display">
+            <code class="shotfix-dir-path">.shotfix/captures/</code>
+            <button class="shotfix-dir-copy" title="Copy path">📋</button>
+          </div>
+        </div>
+        <div class="shotfix-setting-group">
+          <label class="shotfix-setting-label">CLAUDE.md</label>
+          <p class="shotfix-setting-desc">Add context for AI assistants about your captures.</p>
+          <button class="shotfix-claudemd-btn">Edit CLAUDE.md</button>
+        </div>
       </div>
     </div>
   `;
 
   // Tab switching
   sidebar.querySelectorAll('.shotfix-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      switchTab(tab.dataset.tab);
-    });
+    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
   });
 
   // Close button
@@ -92,21 +139,28 @@ function createSidebar() {
     setSidebarOpen(false);
   });
 
-  // Shortcut editor
+  // Settings setup
   setupShortcutEditor();
+  setupProviderSettings();
+
+  // Copy directory path
+  sidebar.querySelector('.shotfix-dir-copy').addEventListener('click', () => {
+    const path = sidebar.querySelector('.shotfix-dir-path').textContent;
+    navigator.clipboard.writeText(path).then(() => {
+      const btn = sidebar.querySelector('.shotfix-dir-copy');
+      btn.textContent = '✓';
+      setTimeout(() => { btn.textContent = '📋'; }, 1500);
+    }).catch(() => {
+      // Clipboard not available (insecure context or permission denied)
+    });
+  });
+
+  // CLAUDE.md editor
+  sidebar.querySelector('.shotfix-claudemd-btn').addEventListener('click', () => {
+    openClaudeMdModal();
+  });
 
   document.body.appendChild(sidebar);
-
-  // Restore saved entries
-  if (entries.length > 0) {
-    const saved = [...entries];
-    entries = [];
-    // Replay in reverse (oldest first) so prepend order is correct
-    for (let i = saved.length - 1; i >= 0; i--) {
-      addEntry(saved[i].type, saved[i].data, true);
-    }
-  }
-
   return sidebar;
 }
 
@@ -119,6 +173,180 @@ function switchTab(tab) {
   sidebar.querySelector('.shotfix-tab-settings').style.display = tab === 'settings' ? '' : 'none';
 }
 
+// --- Session list ---
+
+function renderSessions() {
+  const list = sidebar.querySelector('.shotfix-activity-list');
+  if (!list) return;
+
+  if (sessions.length === 0) {
+    list.innerHTML = '<div class="shotfix-empty">No sessions yet. Use the keyboard shortcut to capture.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  for (const session of sessions) {
+    const card = document.createElement('div');
+    card.className = 'shotfix-session-card';
+    if (session.id === activeSessionId) card.classList.add('shotfix-session-active');
+    card.dataset.sessionId = session.id;
+
+    const thumbUrl = session.hasScreenshot ? `${serverUrl}/sessions/${session.id}/screenshot` : '';
+
+    card.innerHTML = `
+      ${thumbUrl ? `<img class="shotfix-session-thumb" src="${thumbUrl}" alt="" />` : '<div class="shotfix-session-thumb-empty"></div>'}
+      <div class="shotfix-session-body">
+        <div class="shotfix-session-title">${escapeHtml(session.title)}</div>
+        <div class="shotfix-session-meta">
+          <span class="shotfix-session-status">${statusIcon(session.status)}</span>
+          <span>${relativeTime(session.timestamp)}</span>
+        </div>
+      </div>
+    `;
+
+    card.addEventListener('click', () => openSessionChat(session.id));
+    list.appendChild(card);
+  }
+}
+
+async function fetchSessions() {
+  try {
+    const res = await fetch(`${serverUrl}/sessions?limit=50`);
+    if (res.ok) {
+      sessions = await res.json();
+      renderSessions();
+    }
+  } catch {}
+}
+
+async function openSessionChat(sessionId) {
+  activeSessionId = sessionId;
+  renderSessions(); // Update active highlight
+
+  // Lazy-load chat module
+  if (!chatModule) {
+    chatModule = await import('./chat.js');
+    chatModule.setOnClose(() => {
+      activeSessionId = null;
+      renderSessions();
+    });
+  }
+
+  chatModule.openChat(sessionId, serverUrl);
+}
+
+// --- Provider settings ---
+
+let configData = null;
+
+async function setupProviderSettings() {
+  // Load config from server
+  try {
+    const res = await fetch(`${serverUrl}/config`);
+    if (res.ok) {
+      configData = await res.json();
+      updateProviderUI();
+    }
+  } catch {}
+
+  // Provider buttons
+  sidebar.querySelectorAll('.shotfix-provider-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!configData) return;
+      const provider = btn.dataset.provider;
+      try {
+        const res = await fetch(`${serverUrl}/config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider }),
+        });
+        if (res.ok) {
+          configData.provider = provider;
+          configData.model = undefined;
+          updateProviderUI();
+        }
+      } catch {}
+    });
+  });
+
+  // Model dropdown
+  sidebar.querySelector('.shotfix-model-dropdown').addEventListener('change', async (e) => {
+    if (!configData) return;
+    const model = e.target.value;
+    try {
+      await fetch(`${serverUrl}/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: configData.provider, model }),
+      });
+      configData.model = model;
+    } catch {}
+  });
+
+  // Save key
+  sidebar.querySelector('.shotfix-key-save').addEventListener('click', async () => {
+    if (!configData) return;
+    const input = sidebar.querySelector('.shotfix-key-input');
+    const key = input.value.trim();
+    if (!key) return;
+
+    const btn = sidebar.querySelector('.shotfix-key-save');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    try {
+      const res = await fetch(`${serverUrl}/config/keys`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: configData.provider, key }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        configData.keys = data.keys;
+        input.value = '';
+        updateKeyStatus();
+        btn.textContent = 'Saved!';
+        setTimeout(() => { btn.textContent = 'Save Key'; btn.disabled = false; }, 1500);
+      } else {
+        btn.textContent = 'Failed';
+        setTimeout(() => { btn.textContent = 'Save Key'; btn.disabled = false; }, 2000);
+      }
+    } catch {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = 'Save Key'; btn.disabled = false; }, 2000);
+    }
+  });
+}
+
+function updateProviderUI() {
+  if (!configData) return;
+
+  // Highlight active provider
+  sidebar.querySelectorAll('.shotfix-provider-btn').forEach(btn => {
+    btn.classList.toggle('shotfix-provider-active', btn.dataset.provider === configData.provider);
+  });
+
+  // Update model dropdown
+  const dropdown = sidebar.querySelector('.shotfix-model-dropdown');
+  const models = configData.models?.[configData.provider] || [];
+  dropdown.innerHTML = models.map(m =>
+    `<option value="${m}" ${m === configData.model ? 'selected' : ''}>${m}</option>`
+  ).join('');
+
+  // Update key status
+  updateKeyStatus();
+}
+
+function updateKeyStatus() {
+  if (!configData) return;
+  const statusEl = sidebar.querySelector('.shotfix-key-status');
+  const hasKey = configData.keys?.[configData.provider];
+  statusEl.textContent = hasKey ? '✓' : '';
+  statusEl.className = 'shotfix-key-status' + (hasKey ? ' shotfix-key-set' : '');
+}
+
+// --- Shortcut editor ---
+
 function setupShortcutEditor() {
   const display = sidebar.querySelector('.shotfix-shortcut-display');
   const recorder = sidebar.querySelector('.shotfix-shortcut-recorder');
@@ -128,11 +356,9 @@ function setupShortcutEditor() {
   const recorderBox = sidebar.querySelector('.shotfix-recorder-box');
   const keysDisplay = sidebar.querySelector('.shotfix-shortcut-keys');
 
-  let recording = false;
   let handler = null;
 
   editBtn.addEventListener('click', () => {
-    recording = true;
     display.style.display = 'none';
     recorder.style.display = '';
     recorderBox.textContent = 'Press your new shortcut...';
@@ -141,7 +367,6 @@ function setupShortcutEditor() {
     handler = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      // Ignore standalone modifier keys
       if (['Control', 'Shift', 'Meta', 'Alt'].includes(e.key)) return;
 
       const newShortcut = {
@@ -171,7 +396,6 @@ function setupShortcutEditor() {
   });
 
   function stopRecording() {
-    recording = false;
     display.style.display = '';
     recorder.style.display = 'none';
     recorderBox.classList.remove('shotfix-recording');
@@ -182,210 +406,152 @@ function setupShortcutEditor() {
   }
 }
 
-function addEntry(type, data, fromStorage = false) {
-  // Don't persist transient "fixing" entries
-  if (type === 'fixing' && fromStorage) return;
+// --- CLAUDE.md modal ---
 
-  const list = sidebar.querySelector('.shotfix-activity-list');
-  const entry = document.createElement('div');
-  entry.className = `shotfix-activity-entry shotfix-activity-${type}`;
-
-  const time = data._time || new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-  if (type === 'capture') {
-    entry.innerHTML = `
-      <div class="shotfix-entry-icon">⚡</div>
-      <div class="shotfix-entry-body">
-        <div class="shotfix-entry-title">Captured: ${escapeHtml(data.title)}</div>
-        <div class="shotfix-entry-meta">${time}</div>
-      </div>
-    `;
-  } else if (type === 'fixing') {
-    const existing = list.querySelector(`[data-fix-title="${CSS.escape(data.title)}"]`);
-    if (existing) {
-      if (data.status === 'searching') {
-        existing.querySelector('.shotfix-entry-title').textContent = 'Searching for source...';
-      } else if (data.status === 'calling_ai') {
-        existing.querySelector('.shotfix-entry-title').textContent = `AI fixing: ${data.file}`;
-      }
-      return;
+async function openClaudeMdModal() {
+  let content = '';
+  try {
+    const res = await fetch(serverUrl + '/claude-md');
+    if (res.ok) {
+      const data = await res.json();
+      content = data.content || '';
     }
-    entry.setAttribute('data-fix-title', data.title);
-    entry.innerHTML = `
-      <div class="shotfix-entry-icon"><span class="shotfix-spinner"></span></div>
-      <div class="shotfix-entry-body">
-        <div class="shotfix-entry-title">Searching for source...</div>
-        <div class="shotfix-entry-meta">${escapeHtml(data.title)}</div>
+  } catch {}
+
+  if (!content) {
+    content = '# Shotfix\n\nCheck `.shotfix/captures/latest.json` and `latest.png` for visual bug captures with screenshots and element metadata.\n';
+  }
+
+  const modal = document.createElement('div');
+  modal.className = 'shotfix-modal-overlay';
+  modal.innerHTML = `
+    <div class="shotfix-modal">
+      <div class="shotfix-modal-header">
+        <span class="shotfix-modal-title">CLAUDE.md</span>
+        <button class="shotfix-modal-close">&times;</button>
       </div>
-      <button class="shotfix-cancel-btn" title="Cancel">✕</button>
-    `;
-    entry.querySelector('.shotfix-cancel-btn').addEventListener('click', async (e) => {
-      e.stopPropagation();
-      try {
-        await fetch(serverUrl + '/cancel', { method: 'POST' });
-      } catch {}
-    });
-  } else if (type === 'fixed') {
-    const existing = list.querySelector(`[data-fix-title="${CSS.escape(data.title)}"]`);
-    if (existing) existing.remove();
+      <textarea class="shotfix-modal-editor">${escapeHtml(content)}</textarea>
+      <div class="shotfix-modal-footer">
+        <button class="shotfix-modal-cancel">Cancel</button>
+        <button class="shotfix-modal-save">Save</button>
+      </div>
+    </div>
+  `;
 
-    if (data.status === 'done') {
-      entry.innerHTML = `
-        <div class="shotfix-entry-icon">✅</div>
-        <div class="shotfix-entry-body">
-          <div class="shotfix-entry-title">Fixed: ${escapeHtml(data.title)}</div>
-          <div class="shotfix-entry-meta">${data.file} — ${data.elapsed}s, ${data.edits} edit${data.edits === 1 ? '' : 's'}</div>
-        </div>
-        <div class="shotfix-entry-expand">›</div>
-      `;
-      entry.style.cursor = 'pointer';
+  document.body.appendChild(modal);
 
-      // Expandable detail with revert
-      const detail = document.createElement('div');
-      detail.className = 'shotfix-entry-detail';
-      detail.innerHTML = `
-        <div class="shotfix-detail-file">📄 ${escapeHtml(data.file)}</div>
-        <div class="shotfix-detail-stats">${data.edits} edit${data.edits === 1 ? '' : 's'} in ${data.elapsed}s</div>
-        <button class="shotfix-revert-btn">↩ Revert</button>
-      `;
-      detail.style.display = 'none';
+  const textarea = modal.querySelector('.shotfix-modal-editor');
+  textarea.value = content;
+  textarea.focus();
 
-      entry.addEventListener('click', (e) => {
-        if (e.target.closest('.shotfix-revert-btn')) return;
-        const open = detail.style.display !== 'none';
-        detail.style.display = open ? 'none' : '';
-        entry.querySelector('.shotfix-entry-expand').textContent = open ? '›' : '⌄';
+  const close = () => modal.remove();
+
+  modal.querySelector('.shotfix-modal-close').addEventListener('click', close);
+  modal.querySelector('.shotfix-modal-cancel').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  modal.querySelector('.shotfix-modal-save').addEventListener('click', async () => {
+    const saveBtn = modal.querySelector('.shotfix-modal-save');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+    try {
+      const res = await fetch(serverUrl + '/claude-md', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: textarea.value }),
       });
-
-      detail.querySelector('.shotfix-revert-btn').addEventListener('click', async () => {
-        const btn = detail.querySelector('.shotfix-revert-btn');
-        btn.disabled = true;
-        btn.textContent = '↩ Reverting...';
-        try {
-          const res = await fetch(serverUrl + '/revert', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: data.file }),
-          });
-          if (res.ok) {
-            entry.querySelector('.shotfix-entry-icon').textContent = '↩';
-            entry.querySelector('.shotfix-entry-title').textContent = 'Reverted: ' + escapeHtml(data.title);
-            detail.remove();
-            entry.style.cursor = 'default';
-            entry.querySelector('.shotfix-entry-expand').remove();
-          } else {
-            btn.textContent = '↩ Failed';
-            setTimeout(() => { btn.textContent = '↩ Revert'; btn.disabled = false; }, 2000);
-          }
-        } catch {
-          btn.textContent = '↩ Failed';
-          setTimeout(() => { btn.textContent = '↩ Revert'; btn.disabled = false; }, 2000);
-        }
-      });
-
-      // Append detail after the entry
-      entry._detail = detail;
-    } else {
-      entry.innerHTML = `
-        <div class="shotfix-entry-icon">❌</div>
-        <div class="shotfix-entry-body">
-          <div class="shotfix-entry-title">Failed: ${escapeHtml(data.title)}</div>
-          <div class="shotfix-entry-meta">${escapeHtml(data.message || 'Unknown error')}</div>
-        </div>
-      `;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      saveBtn.textContent = 'Saved!';
+      setTimeout(close, 600);
+    } catch {
+      saveBtn.textContent = 'Failed';
+      saveBtn.disabled = false;
+      setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
     }
-  } else if (type === 'connected') {
-    entry.innerHTML = `
-      <div class="shotfix-entry-icon">🔌</div>
-      <div class="shotfix-entry-body">
-        <div class="shotfix-entry-title">Connected to Shotfix</div>
-        <div class="shotfix-entry-meta">${time}</div>
-      </div>
-    `;
-  }
-
-  if (fromStorage) {
-    entry.style.animation = 'none';
-  }
-
-  if (entry._detail) {
-    list.prepend(entry._detail);
-  }
-  list.prepend(entry);
-
-  // Don't persist fixing entries (transient)
-  if (type !== 'fixing') {
-    entries.unshift({ type, data: { ...data, _time: time }, time });
-    if (entries.length > MAX_ENTRIES) {
-      entries.pop();
-    }
-    saveEntries();
-  }
-
-  if (list.children.length > MAX_ENTRIES * 2) {
-    list.removeChild(list.lastChild);
-  }
-
-  if (!fromStorage) {
-    // Pulse the dot
-    const dot = sidebar.querySelector('.shotfix-activity-dot');
-    dot.classList.remove('shotfix-dot-pulse');
-    void dot.offsetWidth;
-    dot.classList.add('shotfix-dot-pulse');
-
-    // Auto-switch to activity tab on new events
-    if (currentTab !== 'activity') {
-      switchTab('activity');
-    }
-  }
+  });
 }
 
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
+// --- SSE connection with reconnect ---
 
-export function getShortcut() {
-  return shortcut;
-}
-
-export function setCaptureCallback(fn) {
-  captureCallback = fn;
-}
-
-export function connectActivity(url) {
-  serverUrl = url;
-  createSidebar();
+function connectSSE() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
 
   eventSource = new EventSource(`${serverUrl}/events`);
 
   eventSource.addEventListener('connected', () => {
-    addEntry('connected', {});
+    sseReconnectDelay = 1000; // Reset backoff
     sidebar.querySelector('.shotfix-activity-dot').classList.add('shotfix-dot-live');
-    // Restore sidebar state after reload
     if (isSidebarSavedOpen()) {
       setSidebarOpen(true);
     }
   });
 
-  eventSource.addEventListener('capture', (e) => {
+  eventSource.addEventListener('session:created', (e) => {
     const data = JSON.parse(e.data);
-    addEntry('capture', data);
+    // Prepend new session
+    sessions.unshift({
+      id: data.id,
+      title: data.title,
+      status: data.status || 'pending',
+      timestamp: data.timestamp,
+      hasScreenshot: true,
+    });
+    renderSessions();
     setSidebarOpen(true);
+    if (currentTab !== 'activity') switchTab('activity');
+
+    // Pulse dot
+    const dot = sidebar.querySelector('.shotfix-activity-dot');
+    dot.classList.remove('shotfix-dot-pulse');
+    void dot.offsetWidth;
+    dot.classList.add('shotfix-dot-pulse');
   });
 
-  eventSource.addEventListener('fixing', (e) => {
-    addEntry('fixing', JSON.parse(e.data));
-  });
+  eventSource.addEventListener('session:updated', (e) => {
+    const data = JSON.parse(e.data);
+    // Update session in list
+    const idx = sessions.findIndex(s => s.id === data.id);
+    if (idx >= 0) {
+      sessions[idx].status = data.status;
+      if (data.title) sessions[idx].title = data.title;
+      renderSessions();
+    }
 
-  eventSource.addEventListener('fixed', (e) => {
-    addEntry('fixed', JSON.parse(e.data));
+    // Forward to chat module if loaded
+    if (chatModule) {
+      chatModule.handleSessionUpdate(data);
+    }
   });
 
   eventSource.onerror = () => {
     sidebar.querySelector('.shotfix-activity-dot').classList.remove('shotfix-dot-live');
+    eventSource.close();
+    eventSource = null;
+
+    // Exponential backoff reconnect
+    if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+    sseReconnectTimer = setTimeout(() => {
+      console.log('[Shotfix] Reconnecting SSE...');
+      connectSSE();
+    }, sseReconnectDelay);
+    sseReconnectDelay = Math.min(sseReconnectDelay * 2, 30000);
   };
+}
+
+// --- Exports ---
+
+export function getShortcut() {
+  return shortcut;
+}
+
+export function connectActivity(url) {
+  serverUrl = url;
+  createSidebar();
+  connectSSE();
+  fetchSessions();
 }
 
 function setSidebarOpen(open) {
