@@ -3,9 +3,9 @@
  * Click one element → bar appears near it → type → Enter → done.
  */
 
-import { captureScreenshot } from './capture.js';
-import { collectMetadata } from './metadata.js';
-import { extractElementInfo } from './elements.js';
+import { captureScreenshot } from '../core/capture.js';
+import { collectMetadata } from '../core/metadata.js';
+import { extractElementInfo } from '../core/elements.js';
 
 let overlay = null;
 let hoverHighlight = null;
