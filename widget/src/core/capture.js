@@ -7,6 +7,13 @@ const HTML2CANVAS_URL = 'https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.8/dist
 // html-to-image uses SVG foreignObject — preserves cross-origin CSS better
 const HTML_TO_IMAGE_URL = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/dist/html-to-image.js';
 
+// SRI hashes for CDN integrity verification
+const HTML2CANVAS_SRI = 'sha384-QbVSYhU9faw2C7l92rI0Dmke8Yod6KaOixC1kkbO/dGnMDKtbWhwcxSSOkmHXWom';
+const HTML_TO_IMAGE_SRI = 'sha384-Tha/42qsYmpYmQ07pX+nJzkKumO0BzKJxK/uzVc7xyBQxVCUgQBhQIG8L7vXK+9C';
+
+// CSS class prefixes to filter out of selectors and element maps
+const OWN_CLASS_PREFIXES = ['shotfix-', 'blindspot-'];
+
 let html2canvasLoaded = false;
 let htmlToImageLoaded = false;
 
@@ -22,6 +29,8 @@ function loadHtml2Canvas() {
 
     const script = document.createElement('script');
     script.src = HTML2CANVAS_URL;
+    script.integrity = HTML2CANVAS_SRI;
+    script.crossOrigin = 'anonymous';
     script.onload = () => {
       html2canvasLoaded = true;
       console.log('[Shotfix] html2canvas loaded');
@@ -46,6 +55,8 @@ function loadHtmlToImage() {
 
     const script = document.createElement('script');
     script.src = HTML_TO_IMAGE_URL;
+    script.integrity = HTML_TO_IMAGE_SRI;
+    script.crossOrigin = 'anonymous';
     script.onload = () => {
       htmlToImageLoaded = true;
       console.log('[Shotfix] html-to-image loaded');
@@ -56,6 +67,27 @@ function loadHtmlToImage() {
     };
     document.head.appendChild(script);
   });
+}
+
+/**
+ * Check if a CSS class belongs to Shotfix/Blindspot (should be filtered)
+ */
+export function isOwnClass(className) {
+  for (const prefix of OWN_CLASS_PREFIXES) {
+    if (className.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/**
+ * Check if an element is a Shotfix/Blindspot UI element
+ */
+function isOwnElement(node) {
+  if (!node.className || typeof node.className !== 'string') return false;
+  for (const prefix of OWN_CLASS_PREFIXES) {
+    if (node.className.includes(prefix)) return true;
+  }
+  return false;
 }
 
 /**
@@ -79,9 +111,9 @@ export async function captureScreenshot() {
 
   const html2canvas = await loadHtml2Canvas();
 
-  // Hide the trigger button during capture
-  const trigger = document.querySelector('.shotfix-trigger');
-  if (trigger) trigger.style.visibility = 'hidden';
+  // Hide trigger buttons during capture
+  const triggers = document.querySelectorAll('.shotfix-trigger, .blindspot-trigger');
+  triggers.forEach(t => t.style.visibility = 'hidden');
 
   try {
     // Capture element positions BEFORE screenshot (while page is in exact state)
@@ -137,7 +169,7 @@ export async function captureScreenshot() {
           pixelRatio: 1,
           skipAutoScale: true,
           filter: (node) => {
-            if (node.classList?.contains('shotfix-trigger')) return false;
+            if (isOwnElement(node)) return false;
             return true;
           },
         });
@@ -166,8 +198,8 @@ export async function captureScreenshot() {
       viewport: { width, height }
     };
   } finally {
-    // Restore trigger button
-    if (trigger) trigger.style.visibility = 'visible';
+    // Restore trigger buttons
+    triggers.forEach(t => t.style.visibility = 'visible');
   }
 }
 
@@ -180,14 +212,12 @@ function captureElementMap() {
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
 
-  // Walk all elements in the DOM
   const walker = document.createTreeWalker(
     document.body,
     NodeFilter.SHOW_ELEMENT,
     {
       acceptNode: (node) => {
-        // Skip shotfix elements
-        if (node.classList?.contains('shotfix-trigger')) return NodeFilter.FILTER_REJECT;
+        if (isOwnElement(node)) return NodeFilter.FILTER_REJECT;
 
         const style = window.getComputedStyle(node);
         if (style.display === 'none' || style.visibility === 'hidden') {
@@ -203,24 +233,20 @@ function captureElementMap() {
   while (node = walker.nextNode()) {
     const rect = node.getBoundingClientRect();
 
-    // Skip elements outside viewport or too small
     if (rect.width < 5 || rect.height < 5) continue;
     if (rect.bottom < 0 || rect.top > viewportHeight) continue;
     if (rect.right < 0 || rect.left > viewportWidth) continue;
 
-    // Get element info
     const tagName = node.tagName.toLowerCase();
     const id = node.id || null;
     const classes = node.className && typeof node.className === 'string'
-      ? node.className.split(' ').filter(c => c && !c.startsWith('shotfix-'))
+      ? node.className.split(' ').filter(c => c && !isOwnClass(c))
       : [];
 
-    // Get computed styles for visual context
     const styles = window.getComputedStyle(node);
     const backgroundColor = styles.backgroundColor;
     const color = styles.color;
 
-    // Get text content (direct text only, not children)
     let text = '';
     for (const child of node.childNodes) {
       if (child.nodeType === Node.TEXT_NODE) {
@@ -229,10 +255,8 @@ function captureElementMap() {
     }
     text = text.trim().substring(0, 150);
 
-    // Get full inner text for context (truncated)
     const innerText = node.innerText?.trim().substring(0, 200) || '';
 
-    // Build a simple selector
     let selector = tagName;
     if (id) {
       selector = `${tagName}#${id}`;
@@ -240,10 +264,8 @@ function captureElementMap() {
       selector = `${tagName}.${classes.slice(0, 2).join('.')}`;
     }
 
-    // Build full unique CSS selector path
     const fullSelector = getFullSelector(node);
 
-    // Collect filtered data-* attributes
     const dataAttributes = {};
     for (const attr of node.attributes) {
       if (attr.name.startsWith('data-') && !shouldSkipDataAttr(attr.name)) {
@@ -251,16 +273,10 @@ function captureElementMap() {
       }
     }
 
-    // Get accessible name
     const accessibleName = getAccessibleName(node);
-
-    // Get nearby landmark/context
     const context = getNearbyContext(node);
-
-    // Collect data-* attrs from ancestors and their children
     const ancestorData = collectNearbyDataAttributes(node);
 
-    // Build element info object
     const elementInfo = {
       rect: {
         left: rect.left,
@@ -287,7 +303,6 @@ function captureElementMap() {
       },
     };
 
-    // Add type-specific attributes
     if (tagName === 'a' && node.href) {
       elementInfo.href = node.href;
     }
@@ -311,7 +326,6 @@ function captureElementMap() {
       elementInfo.role = node.getAttribute('role');
     }
 
-    // Capture HTML source (truncated for large elements)
     try {
       const html = node.outerHTML;
       if (html.length <= 2000) {
@@ -327,7 +341,6 @@ function captureElementMap() {
     elements.push(elementInfo);
   }
 
-  // Sort by area (smallest first)
   elements.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height));
 
   console.log('[Shotfix] Element map captured:', elements.length, 'elements');
@@ -351,7 +364,7 @@ function getFullSelector(el) {
     }
 
     const classes = Array.from(current.classList)
-      .filter(c => !c.startsWith('shotfix-'))
+      .filter(c => !isOwnClass(c))
       .slice(0, 2);
     if (classes.length) {
       part += '.' + classes.join('.');
@@ -472,7 +485,7 @@ function convertUnsupportedColorsOnPage() {
   }
 
   for (const el of allElements) {
-    if (el.className && typeof el.className === 'string' && el.className.includes('shotfix')) continue;
+    if (isOwnElement(el)) continue;
 
     try {
       const computedStyle = window.getComputedStyle(el);
@@ -511,7 +524,7 @@ const SKIP_DATA_ATTRS = new Set([
 // Prefix patterns to skip (browser extensions, framework internals)
 const SKIP_DATA_PREFIXES = [
   'data-radix-', 'data-dashlane-', 'data-1p-', 'data-lp',
-  'data-sentry-', 'data-shotfix',
+  'data-sentry-', 'data-shotfix', 'data-blindspot',
 ];
 
 /**
@@ -540,7 +553,7 @@ export function collectNearbyDataAttributes(element, maxDepth = 10) {
       const descendants = current.querySelectorAll('*');
       for (const desc of descendants) {
         if (desc.contains(element) || desc === element) continue;
-        if (desc.className && typeof desc.className === 'string' && desc.className.includes('shotfix')) continue;
+        if (isOwnElement(desc)) continue;
         collectDataAttrsFrom(desc, result);
       }
     }

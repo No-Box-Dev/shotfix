@@ -2,7 +2,7 @@
  * DOM element detection and selector generation
  */
 
-import { collectNearbyDataAttributes, shouldSkipDataAttr } from './capture.js';
+import { collectNearbyDataAttributes, shouldSkipDataAttr, isOwnClass } from './capture.js';
 
 /**
  * Check if a selector uniquely matches the given element
@@ -50,7 +50,7 @@ export function generateSelector(element) {
   // Try tag + classes
   if (element.classList.length > 0) {
     const classes = Array.from(element.classList)
-      .filter(c => !c.startsWith('shotfix-'))
+      .filter(c => !isOwnClass(c))
       .map(c => `.${escapeSelector(c)}`)
       .join('');
 
@@ -135,7 +135,7 @@ export function extractElementInfo(element) {
   }
 
   const classes = Array.from(element.classList)
-    .filter(c => !c.startsWith('shotfix-'));
+    .filter(c => !isOwnClass(c));
   if (classes.length > 0) {
     info.classes = classes;
   }

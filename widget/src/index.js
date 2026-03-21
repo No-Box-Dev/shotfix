@@ -2,11 +2,11 @@
  * Shotfix — screenshot + fix, visual AI input for developers
  */
 
-import { injectStyles } from './styles.js';
-import { createTrigger, formatShortcut } from './trigger.js';
-import { startQuickCapture } from './quickcapture.js';
-import { startConsoleCapture } from './metadata.js';
-import { connectActivity, toggleActivity, getShortcut } from './activity.js';
+import { injectStyles } from './fix/styles.js';
+import { createTrigger, formatShortcut } from './fix/trigger.js';
+import { startQuickCapture } from './fix/quickcapture.js';
+import { startConsoleCapture } from './core/metadata.js';
+import { connectActivity, toggleActivity, getShortcut } from './fix/activity.js';
 
 const DEV_SERVER_URL = 'http://localhost:2847';
 
