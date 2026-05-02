@@ -110,7 +110,7 @@ function addLogEntry(type, args) {
     return String(arg);
   }).join(' ');
 
-  if (message.startsWith('[Shotfix]') || message.startsWith('[Blindspot]')) return;
+  if (message.startsWith('[Shotfix]')) return;
 
   consoleLogs.push({
     type,
@@ -184,84 +184,4 @@ export function stopConsoleCapture() {
 
 function getRecentConsoleErrors() {
   return [...consoleLogs];
-}
-
-/**
- * Auto-report uncaught errors to the Shotfix API.
- * Queues errors and flushes every 5s or at 10 items.
- * @param {string} siteId
- * @param {string} apiUrl
- */
-export function autoReportErrors(siteId, apiUrl) {
-  const queue = [];
-  const reported = new Set();
-  let flushTimer = null;
-
-  function fingerprint(msg, source) {
-    return `${msg}|${source || ''}`;
-  }
-
-  function flush() {
-    if (queue.length === 0) return;
-    const batch = queue.splice(0, 10);
-
-    try {
-      fetch(`${apiUrl}/errors`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId, errors: batch }),
-      }).catch(() => {});
-    } catch {
-      // Ignore network failures
-    }
-  }
-
-  function scheduleFlush() {
-    if (flushTimer) return;
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
-      flush();
-    }, 5000);
-  }
-
-  function enqueue(errorData) {
-    const fp = fingerprint(errorData.message, errorData.source);
-    if (reported.has(fp)) return;
-    reported.add(fp);
-
-    errorData.url = window.location.href;
-    errorData.browser = getBrowser();
-    errorData.os = getOS();
-    errorData.timestamp = new Date().toISOString();
-
-    queue.push(errorData);
-
-    if (queue.length >= 10) {
-      flush();
-    } else {
-      scheduleFlush();
-    }
-  }
-
-  window.addEventListener('error', (event) => {
-    if (event.message?.startsWith('[Shotfix]') || event.message?.startsWith('[Blindspot]')) return;
-    enqueue({
-      message: event.message || 'Unknown error',
-      source: event.filename || null,
-      lineno: event.lineno || null,
-      colno: event.colno || null,
-      stack: event.error?.stack || null,
-    });
-  });
-
-  window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason;
-    enqueue({
-      message: reason?.message || String(reason) || 'Unhandled promise rejection',
-      source: null,
-      lineno: null,
-      colno: null,
-      stack: reason?.stack || null,
-    });
-  });
 }
