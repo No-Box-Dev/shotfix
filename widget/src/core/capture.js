@@ -11,8 +11,8 @@ const HTML_TO_IMAGE_URL = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/di
 const HTML2CANVAS_SRI = 'sha384-QbVSYhU9faw2C7l92rI0Dmke8Yod6KaOixC1kkbO/dGnMDKtbWhwcxSSOkmHXWom';
 const HTML_TO_IMAGE_SRI = 'sha384-Tha/42qsYmpYmQ07pX+nJzkKumO0BzKJxK/uzVc7xyBQxVCUgQBhQIG8L7vXK+9C';
 
-// CSS class prefixes to filter out of selectors and element maps
-const OWN_CLASS_PREFIXES = ['shotfix-', 'blindspot-'];
+// CSS class prefix used to filter Shotfix's own UI out of selectors and element maps
+const OWN_CLASS_PREFIX = 'shotfix-';
 
 let html2canvasLoaded = false;
 let htmlToImageLoaded = false;
@@ -69,25 +69,13 @@ function loadHtmlToImage() {
   });
 }
 
-/**
- * Check if a CSS class belongs to Shotfix/Blindspot (should be filtered)
- */
 export function isOwnClass(className) {
-  for (const prefix of OWN_CLASS_PREFIXES) {
-    if (className.startsWith(prefix)) return true;
-  }
-  return false;
+  return className.startsWith(OWN_CLASS_PREFIX);
 }
 
-/**
- * Check if an element is a Shotfix/Blindspot UI element
- */
 function isOwnElement(node) {
   if (!node.className || typeof node.className !== 'string') return false;
-  for (const prefix of OWN_CLASS_PREFIXES) {
-    if (node.className.includes(prefix)) return true;
-  }
-  return false;
+  return node.className.includes(OWN_CLASS_PREFIX);
 }
 
 /**
@@ -112,7 +100,7 @@ export async function captureScreenshot() {
   const html2canvas = await loadHtml2Canvas();
 
   // Hide trigger buttons during capture
-  const triggers = document.querySelectorAll('.shotfix-trigger, .blindspot-trigger');
+  const triggers = document.querySelectorAll('.shotfix-trigger');
   triggers.forEach(t => t.style.visibility = 'hidden');
 
   try {
@@ -524,7 +512,7 @@ const SKIP_DATA_ATTRS = new Set([
 // Prefix patterns to skip (browser extensions, framework internals)
 const SKIP_DATA_PREFIXES = [
   'data-radix-', 'data-dashlane-', 'data-1p-', 'data-lp',
-  'data-sentry-', 'data-shotfix', 'data-blindspot',
+  'data-sentry-', 'data-shotfix',
 ];
 
 /**
